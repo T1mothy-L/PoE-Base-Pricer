@@ -84,6 +84,12 @@ SCOUT_BASE = "https://poe2scout.com/api"
 SCOUT_REALM_PATH = "poe2"
 
 
+class TradeAuthError(Exception):
+    """Raised when the trade API returns 401/403 — the whole run is doomed
+    because every subsequent search would hit the same wall. Caught at the
+    top of main() to abort fast and notify."""
+
+
 # ============================================================
 # PoE2 Trade API client
 # ============================================================
@@ -166,6 +172,11 @@ class TradeClient:
             print(f"  search network error [{base}/{currency}]: {e}", file=sys.stderr)
             return None
         self._check_rate_warnings(r, "search")
+        if r.status_code in (401, 403):
+            raise TradeAuthError(
+                f"search HTTP {r.status_code} on {base}/{currency}: "
+                f"{r.text[:200]}"
+            )
         if r.status_code != 200:
             print(
                 f"  search HTTP {r.status_code} [{base}/{currency}]: "
@@ -175,7 +186,10 @@ class TradeClient:
             return None
         return r.json()
 
-    def fetch(self, query_id: str, hashes: list) -> list:
+    def fetch(self, query_id: str, hashes: list) -> list | None:
+        """Returns the listing list on success, [] when there's nothing to
+        fetch, or None when an HTTP/network error occurred (so the caller
+        can distinguish 'empty' from 'errored')."""
         if not hashes:
             return []
         url = f"{TRADE_BASE}/fetch/{','.join(hashes[:10])}"
@@ -183,11 +197,15 @@ class TradeClient:
             r = self.session.get(url, params={"query": query_id}, timeout=30)
         except requests.RequestException as e:
             print(f"  fetch network error: {e}", file=sys.stderr)
-            return []
+            return None
         self._check_rate_warnings(r, "fetch")
+        if r.status_code in (401, 403):
+            raise TradeAuthError(
+                f"fetch HTTP {r.status_code}: {r.text[:200]}"
+            )
         if r.status_code != 200:
             print(f"  fetch HTTP {r.status_code}: {r.text[:150]}", file=sys.stderr)
-            return []
+            return None
         return r.json().get("result") or []
 
 
@@ -261,16 +279,21 @@ def process_item(client: TradeClient, converter: CurrencyConverter,
     currencies = [c for c in CURRENCIES if c not in excluded]
     exalt_values: list[float] = []
     total_listings = 0  # sum of search.total across queried currencies
+    errored = False  # True if any HTTP/network call failed for this item
 
     for currency in currencies:
         search = client.search(base, min_ilvl, currency)
-        if not search:
+        if search is None:
+            errored = True
             continue
         total_listings += search.get("total", 0)
         hashes = (search.get("result") or [])[:TOP_N_PER_CURRENCY]
         if not hashes:
             continue
         listings = client.fetch(search["id"], hashes)
+        if listings is None:
+            errored = True
+            continue
         for listing in listings:
             price = (listing.get("listing") or {}).get("price") or {}
             amt = price.get("amount")
@@ -290,6 +313,7 @@ def process_item(client: TradeClient, converter: CurrencyConverter,
         "min_ilvl": min_ilvl,
         "median_exalts": median,
         "num_listings": total_listings,
+        "errored": errored,
     }
 
 
@@ -461,17 +485,39 @@ def main() -> int:
 
     client = TradeClient(LEAGUE, POESESSID, USER_AGENT)
     results = []
-    for i, item in enumerate(items, 1):
-        excl = item.get("exclude") or []
-        excl_str = f"  [excluding: {', '.join(excl)}]" if excl else ""
-        print(f"[{i}/{len(items)}] {item['base']} ilvl≥{item['min_ilvl']}{excl_str}")
-        result = process_item(client, converter, item)
-        if result["median_exalts"] is not None:
-            print(f"    → {result['median_exalts']:.2f} ex  "
-                  f"({result['num_listings']} total listings)\n")
-        else:
-            print(f"    → no listings\n")
-        results.append(result)
+    try:
+        for i, item in enumerate(items, 1):
+            excl = item.get("exclude") or []
+            excl_str = f"  [excluding: {', '.join(excl)}]" if excl else ""
+            print(f"[{i}/{len(items)}] {item['base']} ilvl≥{item['min_ilvl']}{excl_str}")
+            result = process_item(client, converter, item)
+            if result["errored"]:
+                print(f"    → HTTP error during fetch\n")
+            elif result["median_exalts"] is not None:
+                print(f"    → {result['median_exalts']:.2f} ex  "
+                      f"({result['num_listings']} total listings)\n")
+            else:
+                print(f"    → no listings\n")
+            results.append(result)
+    except TradeAuthError as e:
+        msg = (f"trade API auth failed ({e}). POESESSID is likely stale -- "
+               "re-grab from browser devtools and update the secret.")
+        print(f"ERROR: {msg}", file=sys.stderr)
+        notify(f"✗ PoE2 tracker: {msg}")
+        return 1
+
+    # Refuse to overwrite latest.json / prices.db if any item errored. We'd
+    # rather keep yesterday's good data than commit a partially-corrupt run.
+    errored = [r for r in results if r["errored"]]
+    if errored:
+        names = ", ".join(f"{r['base']}" for r in errored[:5])
+        if len(errored) > 5:
+            names += f", +{len(errored) - 5} more"
+        msg = (f"{len(errored)}/{len(results)} item(s) hit HTTP errors "
+               f"[{names}]. Not writing outputs.")
+        print(f"ERROR: {msg}", file=sys.stderr)
+        notify(f"✗ PoE2 tracker: {msg}")
+        return 1
 
     write_outputs(
         results, converter.rates_to_exalt, LEAGUE, DB_PATH, LATEST_PATH
