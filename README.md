@@ -80,7 +80,7 @@ Routines clone this repo at the start of every run, so committing changes back i
    - **Repo:** this one
    - **Schedule:** every 2–4 hours (match your daily quota — Pro plans have a low daily run cap)
    - **Network:** allow `pathofexile.com` and `poe2scout.com` (and `api.telegram.org` if using notifications)
-   - **Setup script:** `pip install -r requirements.txt`
+   - **Setup script:** `pip install requests python-dotenv` (inlining the deps avoids cwd-sensitivity in the Routine sandbox; `requirements.txt` is the source of truth for local installs)
    - **Secrets:** `POESESSID` (and optionally `POE2_LEAGUE`, `POE2_CONTACT`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`)
    - **Prompt (the routine's task):** something like:
 
