@@ -71,35 +71,57 @@ The script paces searches at one every **6.5 seconds**, which keeps you at ~77% 
 
 On every response the script parses `X-Rate-Limit-*-State` and prints a warning to stderr if the 60/300s tier crosses 48 used (80%), or if a ban is in effect. This is a smoke alarm only — no auto-throttling, since 6.5s pacing should always be safe.
 
-## Running as a Claude Routine
+## Running on a schedule
 
-Routines clone this repo at the start of every run, so committing changes back is how state persists across runs.
+GGG's trade API blocks most cloud-provider IPs (Claude Routines, GitHub Actions hosted runners, etc.) at the source — `code 6 "Forbidden"`. The fix is to run the tracker on a residential IP, i.e. your own PC. The repo includes a PowerShell wrapper and a setup script that wires it into Windows Task Scheduler.
 
-1. **Push this repo to GitHub** (private is fine).
-2. **Create a Claude Routine** at [claude.ai/code](https://claude.ai/code) → `/schedule`. Configure:
-   - **Repo:** this one
-   - **Schedule:** every 2–4 hours (match your daily quota — Pro plans have a low daily run cap)
-   - **Network:** allow `pathofexile.com` and `poe2scout.com` (and `api.telegram.org` if using notifications)
-   - **Setup script:** `pip install requests python-dotenv` (inlining the deps avoids cwd-sensitivity in the Routine sandbox; `requirements.txt` is the source of truth for local installs)
-   - **Secrets:** `POESESSID` (and optionally `POE2_LEAGUE`, `POE2_CONTACT`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`)
-   - **Prompt (the routine's task):** something like:
+### One-time Task Scheduler setup
 
-     ```
-     Run the price tracker:
+1. Make sure the local dev steps above work (`python poe2_price_tracker.py` finishes with `✓` on this machine).
+2. Open PowerShell **as Administrator**, `cd` into this repo, and run:
 
-         python poe2_price_tracker.py
+   ```powershell
+   .\setup_schedule.ps1
+   ```
 
-     If the script exits 0, commit the changes to prices.db and latest.json with
-     message "prices: <timestamp>" and push to main. If it exits non-zero or
-     prints a rate-limit ban warning, do not commit; report the error and stop.
-     ```
+   This registers a scheduled task named **PoE2 Price Tracker** that runs every 4 hours (anchored at midnight), wakes the laptop from sleep if needed, and only runs when plugged in. Edit the variables at the top of the script to change the interval, anchor, or timeout.
 
-3. **Verify the first run** by checking that `prices.db` and `latest.json` appear as commits on the default branch.
+3. Confirm it works end-to-end with one manual run:
+
+   ```powershell
+   Start-ScheduledTask -TaskName 'PoE2 Price Tracker'
+   ```
+
+   You should see the task go from Ready → Running in Task Scheduler, get a Telegram ping when it finishes, and a `prices: <timestamp>` commit appear on GitHub.
+
+### Laptop-closed power settings
+
+For the task to fire while the lid is closed, Windows needs to be allowed to wake and not sleep too aggressively. Once-off:
+
+1. **Settings → System → Power & battery → Power mode**: any "Balanced" or "Best performance" mode is fine.
+2. **Control Panel → Power Options → Choose what closing the lid does**: when **Plugged in**, set both *Sleep button* and *Close the lid* to **Do nothing** (or **Sleep** if you'd rather the system actually suspend between runs — Task Scheduler's `WakeToRun` flag handles waking it back up either way).
+3. **Control Panel → Power Options → Change plan settings → Change advanced power settings → Sleep → Allow wake timers**: set to **Enable** for both On battery and Plugged in (or just Plugged in if you skip battery runs).
+
+If the laptop is set to *Hibernate* on lid close, wake timers don't fire — use *Sleep* instead.
+
+### Wrapper script details
+
+`run_tracker.ps1` is what Task Scheduler invokes. It:
+
+- runs `python poe2_price_tracker.py` in the repo dir,
+- on exit 0, stages `prices.db` + `latest.json`, commits them as `prices: <ISO timestamp>`, and pushes to the configured remote,
+- on non-zero exit, does nothing — the Python script has already sent a Telegram ping with the failure reason.
+
+`git push` uses Windows Credential Manager; once you've pushed once interactively, subsequent pushes from the scheduled task work without prompting.
+
+### Why not a Claude Routine
+
+Routine sandboxes run on cloud-provider IPs, which GGG's trade API rejects with `403 code 6 "Forbidden"`. We confirmed this with byte-for-byte identical secrets across local and Routine — local works, Routine 403s on every call. The poe2scout currency-rate endpoint still works in a Routine (different host, different rules), so a future variant could pull pricing from poe2scout if you ever want to move off the local schedule.
 
 ## Troubleshooting
 
-- **`HTTP 403` from the trade API** — `POESESSID` is stale or wrong. Re-export from devtools.
-- **`HTTP 403` with `Cloudflare`** — the trade User-Agent might need refreshing. Try copying a real cURL from your browser.
+- **`HTTP 403` from the trade API on a cloud runner (Routine, GitHub Actions, etc.)** — GGG is blocking the source IP. Run the tracker locally via Task Scheduler instead; see "Running on a schedule" above.
+- **`HTTP 403` from a residential IP** — `POESESSID` is stale or wrong. Re-export from devtools.
 - **`HTTP 404` from poe2scout** — `SCOUT_REALM_PATH` in the script may need updating; check `https://poe2scout.com/api/Realms` for the current value.
 - **Banned (1800s remaining)** — you hit the 60/300s tier. Should not happen with default pacing; check for concurrent runs.
 - **"no listings" for an item** — likely a misspelled base name in `items.json`. Verify on `https://www.pathofexile.com/trade2`.
