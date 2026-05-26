@@ -48,6 +48,23 @@ Each item has two required fields and one optional one:
 
 Bad values fail at startup before any API call.
 
+## Telegram notifications (optional)
+
+If `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` are both set, every run sends a one-line summary to your Telegram chat. Success looks like:
+
+```
+✓ PoE2 Standard: 2 priced — Sekhema Sandals 209.0ex, Ancestral Tiara 28.8ex
+```
+
+Failures (missing POESESSID, bad config, no rates fetched, unhandled crash) send a `✗`-prefixed reason. If either env var is unset the feature silently no-ops.
+
+**Setup (~2 minutes):**
+
+1. In Telegram, message [@BotFather](https://t.me/BotFather) → `/newbot` → follow prompts → copy the API token.
+2. Open a chat with your new bot and send it any message (the bot can't message you first).
+3. Visit `https://api.telegram.org/bot<YOUR_TOKEN>/getUpdates` in a browser, find the `"chat":{"id":...}` value.
+4. Put both values in `.env` (locally) and/or as Routine secrets.
+
 ## Pacing and rate limits
 
 The script paces searches at one every **6.5 seconds**, which keeps you at ~77% of the binding 60-per-300s IP tier on the trade search endpoint. Each item costs 4 searches (one per currency) + 4 fetches, so ~26s per item. Ten items ≈ 4.5 minutes per run.
@@ -62,9 +79,9 @@ Routines clone this repo at the start of every run, so committing changes back i
 2. **Create a Claude Routine** at [claude.ai/code](https://claude.ai/code) → `/schedule`. Configure:
    - **Repo:** this one
    - **Schedule:** every 2–4 hours (match your daily quota — Pro plans have a low daily run cap)
-   - **Network:** allow `pathofexile.com` and `poe2scout.com`
+   - **Network:** allow `pathofexile.com` and `poe2scout.com` (and `api.telegram.org` if using notifications)
    - **Setup script:** `pip install -r requirements.txt`
-   - **Secrets:** `POESESSID` (and optionally `POE2_LEAGUE`, `POE2_CONTACT`)
+   - **Secrets:** `POESESSID` (and optionally `POE2_LEAGUE`, `POE2_CONTACT`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`)
    - **Prompt (the routine's task):** something like:
 
      ```

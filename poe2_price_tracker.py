@@ -356,6 +356,57 @@ def write_outputs(results: list, rates: dict, league: str,
 
 
 # ============================================================
+# Notifications (Telegram, opt-in via env vars)
+# ============================================================
+
+TELEGRAM_API = "https://api.telegram.org"
+
+
+def notify(message: str) -> None:
+    """Best-effort Telegram ping. No-op if TELEGRAM_BOT_TOKEN or
+    TELEGRAM_CHAT_ID is unset. Failures are logged but never raise —
+    the tracker's exit code reflects the data run, not the notification."""
+    token = os.environ.get("TELEGRAM_BOT_TOKEN")
+    chat_id = os.environ.get("TELEGRAM_CHAT_ID")
+    if not (token and chat_id):
+        return
+    try:
+        r = requests.post(
+            f"{TELEGRAM_API}/bot{token}/sendMessage",
+            json={
+                "chat_id": chat_id,
+                "text": message[:3500],  # well under Telegram's 4096 cap
+                "disable_web_page_preview": True,
+            },
+            timeout=10,
+        )
+        if r.status_code != 200:
+            print(
+                f"  notify: Telegram returned HTTP {r.status_code}: "
+                f"{r.text[:150]}",
+                file=sys.stderr,
+            )
+    except requests.RequestException as e:
+        print(f"  notify: send failed: {e}", file=sys.stderr)
+
+
+def build_success_message(results: list, league: str) -> str:
+    """Compact one-mobile-notification summary. Lists up to 5 priciest bases."""
+    priced = [r for r in results if r["median_exalts"] is not None]
+    no_data = len(results) - len(priced)
+    head = f"✓ PoE2 {league}: {len(priced)} priced"
+    if no_data:
+        head += f" ({no_data} no-data)"
+    if not priced:
+        return head
+    top = sorted(priced, key=lambda r: r["median_exalts"], reverse=True)[:5]
+    items = ", ".join(f"{r['base']} {r['median_exalts']:.1f}ex" for r in top)
+    if len(priced) > 5:
+        items += f", +{len(priced) - 5} more"
+    return f"{head} — {items}"
+
+
+# ============================================================
 # Main
 # ============================================================
 
@@ -363,10 +414,12 @@ def main() -> int:
     if not POESESSID:
         print("ERROR: POESESSID env var not set.", file=sys.stderr)
         print("Set it via: export POESESSID=<your_session_id>", file=sys.stderr)
+        notify("✗ PoE2 tracker: POESESSID env var not set")
         return 1
 
     if not ITEMS_PATH.exists():
         print(f"ERROR: {ITEMS_PATH} not found.", file=sys.stderr)
+        notify(f"✗ PoE2 tracker: {ITEMS_PATH.name} not found")
         return 1
 
     with open(ITEMS_PATH) as f:
@@ -379,20 +432,18 @@ def main() -> int:
         if excl is None:
             continue
         if not isinstance(excl, list):
-            print(
-                f"ERROR: item {i} ({item.get('base')!r}): "
-                f"'exclude' must be a list, got {type(excl).__name__}",
-                file=sys.stderr,
-            )
+            msg = (f"item {i} ({item.get('base')!r}): 'exclude' must be a list, "
+                   f"got {type(excl).__name__}")
+            print(f"ERROR: {msg}", file=sys.stderr)
+            notify(f"✗ PoE2 tracker config error: {msg}")
             return 1
         invalid = set(excl) - EXCLUDABLE_CURRENCIES
         if invalid:
-            print(
-                f"ERROR: item {i} ({item.get('base')!r}): "
-                f"cannot exclude {sorted(invalid)}; "
-                f"only {sorted(EXCLUDABLE_CURRENCIES)} are excludable",
-                file=sys.stderr,
-            )
+            msg = (f"item {i} ({item.get('base')!r}): cannot exclude "
+                   f"{sorted(invalid)}; only {sorted(EXCLUDABLE_CURRENCIES)} "
+                   "are excludable")
+            print(f"ERROR: {msg}", file=sys.stderr)
+            notify(f"✗ PoE2 tracker config error: {msg}")
             return 1
 
     print(f"Tracking {len(items)} items in league '{LEAGUE}'\n")
@@ -401,11 +452,10 @@ def main() -> int:
     converter = CurrencyConverter(LEAGUE)
     converter.fetch_rates()
     if all(v is None for k, v in converter.rates_to_exalt.items() if k != "exalted"):
-        print(
-            "ERROR: no currency rates fetched. "
-            "Check SCOUT_REALM_PATH and league name.",
-            file=sys.stderr,
-        )
+        msg = ("no currency rates fetched from poe2scout. "
+               "Check SCOUT_REALM_PATH and league name.")
+        print(f"ERROR: {msg}", file=sys.stderr)
+        notify(f"✗ PoE2 tracker: {msg}")
         return 1
     print()
 
@@ -428,8 +478,20 @@ def main() -> int:
     )
     print(f"✓ Wrote {len(results)} rows to {DB_PATH.name}")
     print(f"✓ Wrote {LATEST_PATH.name}")
+    notify(build_success_message(results, LEAGUE))
     return 0
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    except SystemExit:
+        raise
+    except BaseException as e:
+        # Unhandled crash — best-effort notify, then re-raise so the
+        # traceback still prints and the process exits non-zero.
+        try:
+            notify(f"✗ PoE2 tracker crashed: {type(e).__name__}: {str(e)[:300]}")
+        except Exception:
+            pass
+        raise
