@@ -500,10 +500,15 @@ def main() -> int:
                 print(f"    → no listings\n")
             results.append(result)
     except TradeAuthError as e:
-        msg = (f"trade API auth failed ({e}). POESESSID is likely stale -- "
-               "re-grab from browser devtools and update the secret.")
+        msg = (
+            f"trade API returned auth error ({e}). Causes (in order of "
+            "likelihood): (1) source IP is on GGG's anti-scraping blocklist "
+            "-- common for cloud-provider IPs, won't happen on a residential "
+            "connection; (2) POESESSID is stale -- re-grab from browser "
+            "devtools."
+        )
         print(f"ERROR: {msg}", file=sys.stderr)
-        notify(f"✗ PoE2 tracker: {msg}")
+        notify(f"✗ PoE2 tracker: trade API forbidden (likely IP-blocked).")
         return 1
 
     # Refuse to overwrite latest.json / prices.db if any item errored. We'd
