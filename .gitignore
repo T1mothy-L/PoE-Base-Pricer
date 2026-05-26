@@ -1,0 +1,12 @@
+.env
+.claude/
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Filter-automation work in progress — not yet ready to push.
+update_filter.py
+filter_config.json
+*.filter
+*.filter.bak
