@@ -53,10 +53,18 @@ USER_AGENT = (
     f"PoE2PriceTracker/0.1 (contact: {CONTACT})"
 )
 
-CURRENCIES = ["chaos", "exalted", "divine", "annul"]
-# Per-item, only these may appear in the optional "exclude" list. Chaos and
-# exalted are always queried — they're the bulk of white-base listings, and
-# excluding them risks ending up with zero data points.
+# Currencies are queried in ascending order of unit value so the cheap
+# currencies populate the top-N first. After each query we check whether
+# the next currency could possibly contribute a listing to the cheapest-N:
+# if the N-th cheapest exalt-equivalent we have is already lower than the
+# next currency's exalt rate, no listing in that currency can fit, so we
+# skip the query. This is what `exclude` *used* to mean manually; it's
+# now automatic. The manual `exclude` field still works as an override
+# for cases where you don't want to spend an API call even speculatively.
+CURRENCIES = ["exalted", "chaos", "annul", "divine"]
+# Manual overrides via items.json `exclude` may only list these. Exalted
+# and chaos drive the bulk of listings; auto-skip will drop them on its
+# own when warranted.
 EXCLUDABLE_CURRENCIES = {"annul", "divine"}
 TOP_N_PER_CURRENCY = 10        # cheapest hashes pulled per currency
 TOP_N_COMBINED = 10            # cheapest after conversion to exalts
@@ -276,12 +284,29 @@ def process_item(client: TradeClient, converter: CurrencyConverter,
     base = item["base"]
     min_ilvl = item["min_ilvl"]
     excluded = set(item.get("exclude") or [])
-    currencies = [c for c in CURRENCIES if c not in excluded]
     exalt_values: list[float] = []
     total_listings = 0  # sum of search.total across queried currencies
     errored = False  # True if any HTTP/network call failed for this item
+    auto_skipped: list[str] = []  # currencies short-circuited by price floor
 
-    for currency in currencies:
+    for currency in CURRENCIES:
+        if currency in excluded:
+            continue
+
+        # Auto-skip: if we already have enough cheap listings to fill our
+        # top-N, and the cheapest possible listing in this currency (one
+        # whole unit, since trades are quoted in whole units of the chosen
+        # currency at minimum) costs more in exalts than our current N-th
+        # cheapest, no listing in this currency could enter the top-N.
+        # Skip the API call.
+        if len(exalt_values) >= TOP_N_COMBINED:
+            rate = converter.rates_to_exalt.get(currency)
+            if rate is not None:
+                nth_cheapest = sorted(exalt_values)[TOP_N_COMBINED - 1]
+                if nth_cheapest < rate:
+                    auto_skipped.append(currency)
+                    continue
+
         search = client.search(base, min_ilvl, currency)
         if search is None:
             errored = True
@@ -314,6 +339,7 @@ def process_item(client: TradeClient, converter: CurrencyConverter,
         "median_exalts": median,
         "num_listings": total_listings,
         "errored": errored,
+        "auto_skipped": auto_skipped,
     }
 
 
@@ -491,13 +517,16 @@ def main() -> int:
             excl_str = f"  [excluding: {', '.join(excl)}]" if excl else ""
             print(f"[{i}/{len(items)}] {item['base']} ilvl≥{item['min_ilvl']}{excl_str}")
             result = process_item(client, converter, item)
+            skip_str = ""
+            if result["auto_skipped"]:
+                skip_str = f"  [auto-skipped: {', '.join(result['auto_skipped'])}]"
             if result["errored"]:
-                print(f"    → HTTP error during fetch\n")
+                print(f"    → HTTP error during fetch{skip_str}\n")
             elif result["median_exalts"] is not None:
                 print(f"    → {result['median_exalts']:.2f} ex  "
-                      f"({result['num_listings']} total listings)\n")
+                      f"({result['num_listings']} total listings){skip_str}\n")
             else:
-                print(f"    → no listings\n")
+                print(f"    → no listings{skip_str}\n")
             results.append(result)
     except TradeAuthError as e:
         msg = (

@@ -44,7 +44,9 @@ Each item has two required fields and one optional one:
 
 - `base` (required) — exact base name as it appears in-game / on the trade site
 - `min_ilvl` (required) — minimum item level filter
-- `exclude` (optional) — list of currencies to skip querying for this item. Only `"annul"` and `"divine"` are allowed; `"chaos"` and `"exalted"` are always queried because they account for the bulk of white-base listings. Skipping a currency cuts that item's API cost by 1 search + 1 fetch (~6.5s saved).
+- `exclude` (optional) — manual override; list of currencies to *always* skip querying for this item. Only `"annul"` and `"divine"` are allowed. Most of the time you don't need this — the script auto-skips currencies when it can prove no listing in them could fit in the cheapest-10 (see below). Use `exclude` only when you want to skip a currency speculatively, before any data is in hand.
+
+**Auto-skip.** Currencies are queried in ascending order of unit value: exalted → chaos → annul → divine. After each query, if the script already has 10+ listings and the 10th cheapest is worth less than one whole unit of the next currency (per the current poe2scout rate), it skips that currency's API call — no listing in it could enter the cheapest-10. Typical white base ilvl 82: only exalted gets queried (chaos/annul/divine all auto-skipped), saving ~20s per item.
 
 Bad values fail at startup before any API call.
 
@@ -67,7 +69,7 @@ Failures (missing POESESSID, bad config, no rates fetched, unhandled crash) send
 
 ## Pacing and rate limits
 
-The script paces searches at one every **6.5 seconds**, which keeps you at ~77% of the binding 60-per-300s IP tier on the trade search endpoint. Each item costs 4 searches (one per currency) + 4 fetches, so ~26s per item. Ten items ≈ 4.5 minutes per run.
+The script paces searches at one every **6.5 seconds**, which keeps you at ~77% of the binding 60-per-300s IP tier on the trade search endpoint. With auto-skip, most cheap white bases only need 1 search + 1 fetch (~6.5s/item); valuable ones priced above a divine each may need all 4 (~26s). 80 mixed items is roughly 15-35 min/run depending on the price profile of your list.
 
 On every response the script parses `X-Rate-Limit-*-State` and prints a warning to stderr if the 60/300s tier crosses 48 used (80%), or if a ban is in effect. This is a smoke alarm only — no auto-throttling, since 6.5s pacing should always be safe.
 
