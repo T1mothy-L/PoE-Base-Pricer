@@ -1,0 +1,25 @@
+name: Publish Output
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'latest.json'
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout private repo
+        uses: actions/checkout@v4
+
+      - name: Push latest.json to public repo
+        run: |
+          git clone https://x-access-token:${{ secrets.OUTPUT_REPO_TOKEN }}@github.com/T1mothy-L/PoE-Base-Price-Output.git public-repo
+          cp latest.json public-repo/latest.json
+          cd public-repo
+          git config user.email "actions@github.com"
+          git config user.name "GitHub Actions"
+          git add latest.json
+          git diff --cached --quiet || git commit -m "prices: $(date '+%Y-%m-%dT%H:%M:%S%:z')"
+          git push
