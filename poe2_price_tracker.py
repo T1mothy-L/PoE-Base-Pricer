@@ -58,14 +58,9 @@ USER_AGENT = (
 # the next currency could possibly contribute a listing to the cheapest-N:
 # if the N-th cheapest exalt-equivalent we have is already lower than the
 # next currency's exalt rate, no listing in that currency can fit, so we
-# skip the query. This is what `exclude` *used* to mean manually; it's
-# now automatic. The manual `exclude` field still works as an override
-# for cases where you don't want to spend an API call even speculatively.
+# skip the query. The previous manual `exclude` field is gone — auto-skip
+# subsumes every case it covered.
 CURRENCIES = ["exalted", "chaos", "annul", "divine"]
-# Manual overrides via items.json `exclude` may only list these. Exalted
-# and chaos drive the bulk of listings; auto-skip will drop them on its
-# own when warranted.
-EXCLUDABLE_CURRENCIES = {"annul", "divine"}
 TOP_N_PER_CURRENCY = 10        # cheapest hashes pulled per currency
 TOP_N_COMBINED = 10            # cheapest after conversion to exalts
 
@@ -283,16 +278,12 @@ def process_item(client: TradeClient, converter: CurrencyConverter,
                  item: dict) -> dict:
     base = item["base"]
     min_ilvl = item["min_ilvl"]
-    excluded = set(item.get("exclude") or [])
     exalt_values: list[float] = []
     total_listings = 0  # sum of search.total across queried currencies
     errored = False  # True if any HTTP/network call failed for this item
     auto_skipped: list[str] = []  # currencies short-circuited by price floor
 
     for currency in CURRENCIES:
-        if currency in excluded:
-            continue
-
         # Auto-skip: if we already have enough cheap listings to fill our
         # top-N, and the cheapest possible listing in this currency (one
         # whole unit, since trades are quoted in whole units of the chosen
@@ -475,27 +466,6 @@ def main() -> int:
     with open(ITEMS_PATH) as f:
         items = json.load(f)
 
-    # Validate the optional "exclude" field on each item. Fail fast on bad
-    # config — a typo here would silently distort the data otherwise.
-    for i, item in enumerate(items):
-        excl = item.get("exclude")
-        if excl is None:
-            continue
-        if not isinstance(excl, list):
-            msg = (f"item {i} ({item.get('base')!r}): 'exclude' must be a list, "
-                   f"got {type(excl).__name__}")
-            print(f"ERROR: {msg}", file=sys.stderr)
-            notify(f"✗ PoE2 tracker config error: {msg}")
-            return 1
-        invalid = set(excl) - EXCLUDABLE_CURRENCIES
-        if invalid:
-            msg = (f"item {i} ({item.get('base')!r}): cannot exclude "
-                   f"{sorted(invalid)}; only {sorted(EXCLUDABLE_CURRENCIES)} "
-                   "are excludable")
-            print(f"ERROR: {msg}", file=sys.stderr)
-            notify(f"✗ PoE2 tracker config error: {msg}")
-            return 1
-
     print(f"Tracking {len(items)} items in league '{LEAGUE}'\n")
 
     print("Fetching currency rates from poe2scout...")
@@ -513,9 +483,7 @@ def main() -> int:
     results = []
     try:
         for i, item in enumerate(items, 1):
-            excl = item.get("exclude") or []
-            excl_str = f"  [excluding: {', '.join(excl)}]" if excl else ""
-            print(f"[{i}/{len(items)}] {item['base']} ilvl≥{item['min_ilvl']}{excl_str}")
+            print(f"[{i}/{len(items)}] {item['base']} ilvl≥{item['min_ilvl']}")
             result = process_item(client, converter, item)
             skip_str = ""
             if result["auto_skipped"]:

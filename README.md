@@ -35,20 +35,17 @@ Edit `items.json` to add bases. Same `base` can appear twice with different `min
 ```json
 [
   {"base": "Expert Laced Boots", "min_ilvl": 82},
-  {"base": "Expert Laced Boots", "min_ilvl": 81, "exclude": ["annul"]},
-  {"base": "Ancestral Tiara",    "min_ilvl": 82, "exclude": ["divine", "annul"]}
+  {"base": "Expert Laced Boots", "min_ilvl": 81},
+  {"base": "Ancestral Tiara",    "min_ilvl": 82}
 ]
 ```
 
-Each item has two required fields and one optional one:
+Each item has two fields:
 
 - `base` (required) — exact base name as it appears in-game / on the trade site
 - `min_ilvl` (required) — minimum item level filter
-- `exclude` (optional) — manual override; list of currencies to *always* skip querying for this item. Only `"annul"` and `"divine"` are allowed. Most of the time you don't need this — the script auto-skips currencies when it can prove no listing in them could fit in the cheapest-10 (see below). Use `exclude` only when you want to skip a currency speculatively, before any data is in hand.
 
 **Auto-skip.** Currencies are queried in ascending order of unit value: exalted → chaos → annul → divine. After each query, if the script already has 10+ listings and the 10th cheapest is worth less than one whole unit of the next currency (per the current poe2scout rate), it skips that currency's API call — no listing in it could enter the cheapest-10. Typical white base ilvl 82: only exalted gets queried (chaos/annul/divine all auto-skipped), saving ~20s per item.
-
-Bad values fail at startup before any API call.
 
 ## Telegram notifications (optional)
 
