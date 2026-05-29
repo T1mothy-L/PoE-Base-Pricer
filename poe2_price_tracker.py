@@ -64,6 +64,15 @@ CURRENCIES = ["exalted", "chaos", "annul", "divine"]
 TOP_N_PER_CURRENCY = 10        # cheapest hashes pulled per currency
 TOP_N_COMBINED = 10            # cheapest after conversion to exalts
 
+# Auto-fan-out: when an ilvl-82 item's median exceeds this many divines, do
+# a follow-up search at ilvl 80 too. The idea is that a chase base worth a
+# divine at ilvl 82 is probably still tradeable at ilvl 80 (which drops
+# meaningfully more often), so we want filter-rule data for both. Fan-out
+# is skipped if the user already has (base, 80) in items.json — their
+# explicit config wins.
+FANOUT_82_TO_80_DIVINE_THRESHOLD = 1.0
+FANOUT_LOWER_ILVL = 80
+
 # Rate-limit pacing: 1 search per 6.5s keeps us at ~77% of the binding 60/300s
 # IP tier on the search endpoint. Fetch piggybacks behind search so doesn't
 # need its own pacing.
@@ -480,22 +489,55 @@ def main() -> int:
     print()
 
     client = TradeClient(LEAGUE, POESESSID, USER_AGENT)
+    # Bases already explicitly configured at FANOUT_LOWER_ILVL — used to
+    # suppress fan-out when the user has their own ilvl-80 row for that base.
+    configured_lower = {
+        item["base"] for item in items
+        if item.get("min_ilvl") == FANOUT_LOWER_ILVL
+    }
     results = []
+
+    def print_result_line(result: dict, indent: str = "    ") -> None:
+        skip_str = ""
+        if result["auto_skipped"]:
+            skip_str = f"  [auto-skipped: {', '.join(result['auto_skipped'])}]"
+        if result["errored"]:
+            print(f"{indent}→ HTTP error during fetch{skip_str}")
+        elif result["median_exalts"] is not None:
+            print(f"{indent}→ {result['median_exalts']:.2f} ex  "
+                  f"({result['num_listings']} total listings){skip_str}")
+        else:
+            print(f"{indent}→ no listings{skip_str}")
+
     try:
         for i, item in enumerate(items, 1):
             print(f"[{i}/{len(items)}] {item['base']} ilvl≥{item['min_ilvl']}")
             result = process_item(client, converter, item)
-            skip_str = ""
-            if result["auto_skipped"]:
-                skip_str = f"  [auto-skipped: {', '.join(result['auto_skipped'])}]"
-            if result["errored"]:
-                print(f"    → HTTP error during fetch{skip_str}\n")
-            elif result["median_exalts"] is not None:
-                print(f"    → {result['median_exalts']:.2f} ex  "
-                      f"({result['num_listings']} total listings){skip_str}\n")
-            else:
-                print(f"    → no listings{skip_str}\n")
+            print_result_line(result)
             results.append(result)
+
+            # Fan-out: ilvl-82 results above 1 divine get a complementary
+            # ilvl-80 lookup. Skipped if the user has (base, 80) configured
+            # already, or if we can't tell the divine rate.
+            divine_rate = converter.rates_to_exalt.get("divine")
+            if (
+                item["min_ilvl"] == 82
+                and not result["errored"]
+                and result["median_exalts"] is not None
+                and divine_rate is not None
+                and result["median_exalts"]
+                    > FANOUT_82_TO_80_DIVINE_THRESHOLD * divine_rate
+                and item["base"] not in configured_lower
+            ):
+                fanout_item = {"base": item["base"],
+                               "min_ilvl": FANOUT_LOWER_ILVL}
+                print(f"     ↳ {item['base']} ilvl≥{FANOUT_LOWER_ILVL} "
+                      "(fan-out: 82 median > 1 divine)")
+                fanout_result = process_item(client, converter, fanout_item)
+                print_result_line(fanout_result, indent="       ")
+                results.append(fanout_result)
+
+            print()  # trailing blank line between items
     except TradeAuthError as e:
         msg = (
             f"trade API returned auth error ({e}). Causes (in order of "

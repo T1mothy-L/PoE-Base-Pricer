@@ -47,6 +47,8 @@ Each item has two fields:
 
 **Auto-skip.** Currencies are queried in ascending order of unit value: exalted → chaos → annul → divine. After each query, if the script already has 10+ listings and the 10th cheapest is worth less than one whole unit of the next currency (per the current poe2scout rate), it skips that currency's API call — no listing in it could enter the cheapest-10. Typical white base ilvl 82: only exalted gets queried (chaos/annul/divine all auto-skipped), saving ~20s per item.
 
+**Auto-fan-out (ilvl 82 → 80).** If an ilvl-82 entry's median exceeds one divine, the script also queries the same base at ilvl 80 and adds a separate row to `latest.json` / `prices.db`. The rationale: a chase base worth a divine at ilvl 82 is usually still tradeable at ilvl 80, and ilvl 80 drops meaningfully more often, so the filter benefits from having both prices. Fan-out is skipped if you've already put `{"base": "...", "min_ilvl": 80}` in `items.json` for that base — your explicit config wins.
+
 ## Telegram notifications (optional)
 
 If `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` are both set, every run sends a one-line summary to your Telegram chat. Success looks like:
