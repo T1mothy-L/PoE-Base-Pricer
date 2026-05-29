@@ -333,6 +333,16 @@ def process_item(client: TradeClient, converter: CurrencyConverter,
     cheapest = exalt_values[:TOP_N_COMBINED]
     median = statistics.median(cheapest) if cheapest else None
 
+    # Thin-market outlier guard: fewer than 10 listings and median > 3× cheapest
+    # signals price-joking. Use 1.5× the cheapest listing as a conservative estimate.
+    if (
+        cheapest
+        and median is not None
+        and len(cheapest) < TOP_N_COMBINED
+        and median > 3 * cheapest[0]
+    ):
+        median = 1.5 * cheapest[0]
+
     return {
         "base": base,
         "min_ilvl": min_ilvl,
