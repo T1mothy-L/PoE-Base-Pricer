@@ -9,7 +9,7 @@ $ErrorActionPreference = 'Stop'
 
 # ---- knobs ----------------------------------------------------------------
 $taskName        = 'PoE2 Price Tracker'
-$intervalHours   = 3              # how often to run
+$intervalHours   = 2              # how often to run
 $firstRunAt      = '01:00'        # daily anchor; runs at this time + every N hours after
 $timeoutHours    = 2           # hard kill if a run takes longer (80 items ≈ 35 min)
 # ---------------------------------------------------------------------------
