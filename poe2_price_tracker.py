@@ -609,23 +609,39 @@ def main() -> int:
             print_result_line(result)
             results.append(result)
 
-            # Fan-out: ilvl-82 results above 1 divine get a complementary
-            # ilvl-80 lookup. Skipped if the user has (base, 80) configured
-            # already, or if we can't tell the divine rate.
+            # Fan-out: an ilvl-82 result triggers a complementary ilvl-80
+            # lookup in two cases:
+            #   (1) median > 1 divine — the base is valuable enough that
+            #       the ilvl-80 drop (which drops more often) is worth
+            #       tracking for the filter.
+            #   (2) median is None — the base had no listings at 82, so
+            #       try 80 to find ANY listings before declaring it
+            #       no-data.
+            # Skipped in either case if the user already has (base, 80)
+            # in items.json (explicit config wins) or if the 82 row
+            # errored (we don't chain failures).
+            fanout_reason: str | None = None
             divine_rate = converter.rates_to_exalt.get("divine")
             if (
                 item["min_ilvl"] == 82
                 and not result["errored"]
-                and result["median_exalts"] is not None
-                and divine_rate is not None
-                and result["median_exalts"]
-                    > FANOUT_82_TO_80_DIVINE_THRESHOLD * divine_rate
                 and item["base"] not in configured_lower
             ):
+                if (
+                    result["median_exalts"] is not None
+                    and divine_rate is not None
+                    and result["median_exalts"]
+                        > FANOUT_82_TO_80_DIVINE_THRESHOLD * divine_rate
+                ):
+                    fanout_reason = "82 median > 1 divine"
+                elif result["median_exalts"] is None:
+                    fanout_reason = "82 had no listings"
+
+            if fanout_reason:
                 fanout_item = {"base": item["base"],
                                "min_ilvl": FANOUT_LOWER_ILVL}
                 print(f"     ↳ {item['base']} ilvl≥{FANOUT_LOWER_ILVL} "
-                      "(fan-out: 82 median > 1 divine)")
+                      f"(fan-out: {fanout_reason})")
                 fanout_result = process_item(client, converter, fanout_item)
                 print_result_line(fanout_result, indent="       ")
                 results.append(fanout_result)
