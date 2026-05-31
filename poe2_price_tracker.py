@@ -73,14 +73,30 @@ TOP_N_COMBINED = 10            # cheapest after conversion to exalts
 FANOUT_82_TO_80_DIVINE_THRESHOLD = 1.0
 FANOUT_LOWER_ILVL = 80
 
-# Rate-limit pacing: 1 search per 6.5s keeps us at ~77% of the binding 60/300s
-# IP tier on the search endpoint. Fetch piggybacks behind search so doesn't
-# need its own pacing.
+# Initial/floor interval between any two API requests (search + fetch share
+# this budget under GGG's `Ip` rule). Autotune may RAISE this based on
+# observed headers; it never drops below this value.
 SEARCH_INTERVAL_SECONDS = 6.5
-# Warn (don't auto-throttle) if the 60/300s tier state climbs to this value or
-# higher. 48 = 80% of 60. Smoke alarm in case GGG tightens limits or someone
-# else hits the same IP.
+
+# Of the smallest tier GGG advertises, what fraction we aim to consume.
+# 0.8 = use up to 80% of the bucket on a sustained basis. Autotune sets
+# self.search_interval = (window / limit) / AUTOTUNE_TARGET_FRACTION for
+# whichever tier yields the most restrictive value.
+AUTOTUNE_TARGET_FRACTION = 0.8
+
+# Warn (just print, no throttle) when any tier crosses this fraction of
+# its limit. Mirrors AUTOTUNE_TARGET_FRACTION by design — if the
+# autotune is working, we should be steady-state below this and only see
+# warnings when external contention (browser, other clients on the IP)
+# pushes us over.
 RATE_LIMIT_WARN_FRACTION = 0.8
+
+# Panic-sleep when any tier crosses this fraction. Adds a one-shot hard
+# pause to the next _pace() call, regardless of the running autotune
+# interval. Circuit-breaker for when autotune lag + external contention
+# combine to threaten a ban.
+PANIC_FRACTION = 0.9
+PANIC_SLEEP_SECONDS = 10.0
 
 # File paths (alongside this script)
 ROOT = Path(__file__).parent
@@ -124,16 +140,50 @@ class TradeClient:
             self.session.cookies.set(
                 "POESESSID", poesessid, domain=".pathofexile.com"
             )
-        self._last_search_at = 0.0  # monotonic-ish pacing anchor
+        # Covers both search and fetch since GGG's `Ip` rule meters them
+        # against the same per-IP bucket. Was `_last_search_at`.
+        self._last_request_at = 0.0
+        # Autotune output; starts at the configured floor. Updated by
+        # _retune_pacing() after every response that came back with
+        # parseable rate-limit headers.
+        self.search_interval = SEARCH_INTERVAL_SECONDS
+        # Panic deadline (epoch seconds). Next _pace() waits until at
+        # least this point before proceeding, regardless of
+        # search_interval. Set by _check_rate_warnings when any tier
+        # crosses PANIC_FRACTION.
+        self._panic_until = 0.0
         self.last_state: dict[tuple[str, int], tuple[int, int]] = {}
         self.peak_state: dict[tuple[str, int], tuple[int, int]] = {}
 
-    def _pace_search(self) -> None:
-        elapsed = time.time() - self._last_search_at
-        wait = SEARCH_INTERVAL_SECONDS - elapsed
+    def _pace(self) -> None:
+        """Sleep until enough time has elapsed since the previous request
+        (per self.search_interval) AND until any active panic-sleep
+        deadline has passed -- whichever is later."""
+        now = time.time()
+        target = max(
+            self._last_request_at + self.search_interval,
+            self._panic_until,
+        )
+        wait = target - now
         if wait > 0:
             time.sleep(wait)
-        self._last_search_at = time.time()
+        self._last_request_at = time.time()
+
+    def _retune_pacing(self) -> None:
+        """Set self.search_interval to the most restrictive value implied
+        by the rate-limit tiers GGG currently advertises. Never goes
+        BELOW the configured floor (SEARCH_INTERVAL_SECONDS), so the
+        autotune can only slow us down vs the constant -- never speed us
+        up past what's safe to assume before any header has been seen."""
+        if not self.last_state:
+            return
+        candidates = [
+            (window / limit) / AUTOTUNE_TARGET_FRACTION
+            for (_rule, window), (_used, limit) in self.last_state.items()
+            if limit > 0
+        ]
+        if candidates:
+            self.search_interval = max(SEARCH_INTERVAL_SECONDS, *candidates)
 
     def _check_rate_warnings(self, response: requests.Response, label: str) -> None:
         """Parse X-Rate-Limit-* headers; update last/peak state, warn at
@@ -182,9 +232,30 @@ class TradeClient:
                         f"({used/limit:.0%})",
                         file=sys.stderr,
                     )
+                if limit > 0 and used >= limit * PANIC_FRACTION:
+                    # Only trigger once per panic window; if we're
+                    # already inside one, don't compound multiple 90%+
+                    # observations (sibling tiers in the same response,
+                    # or consecutive responses while the deadline is
+                    # still in the future).
+                    now = time.time()
+                    if now >= self._panic_until:
+                        self._panic_until = now + PANIC_SLEEP_SECONDS
+                        print(
+                            f"  ⏸ panic-sleep [{label}] {rule} "
+                            f"{window}s at {used}/{limit} "
+                            f"({used/limit:.0%}); next request gated "
+                            f"+{PANIC_SLEEP_SECONDS}s",
+                            file=sys.stderr,
+                        )
+
+        # Reflect the latest headers in the autotune so the NEXT
+        # outgoing request paces against the freshest view of GGG's
+        # advertised limits.
+        self._retune_pacing()
 
     def search(self, base: str, min_ilvl: int, currency: str) -> dict | None:
-        self._pace_search()
+        self._pace()
         url = f"{TRADE_BASE}/search/poe2/{quote(self.league)}"
         body = {
             "query": {
@@ -232,6 +303,9 @@ class TradeClient:
         can distinguish 'empty' from 'errored')."""
         if not hashes:
             return []
+        # Same per-IP budget as search -- pace identically so the
+        # autotune math actually balances. Was unpaced previously.
+        self._pace()
         url = f"{TRADE_BASE}/fetch/{','.join(hashes[:10])}"
         try:
             r = self.session.get(url, params={"query": query_id}, timeout=30)
