@@ -85,7 +85,7 @@ GGG's trade API blocks most cloud-provider IPs (Claude Routines, GitHub Actions 
    .\setup_schedule.ps1
    ```
 
-   This registers a scheduled task named **PoE2 Price Tracker** that runs every 4 hours (anchored at midnight), wakes the laptop from sleep if needed, and only runs when plugged in. Edit the variables at the top of the script to change the interval, anchor, or timeout.
+   This registers a background scheduled task named **PoE2 Price Tracker** that runs every couple of hours and only when plugged in. It runs **whether or not you're logged on** (no console window pops up), so it fires even with the lid closed. To store the credential that allows that, the script **prompts once for your Windows password** — Task Scheduler keeps it encrypted. Edit the variables at the top of the script to change the interval, anchor, or timeout.
 
 3. Confirm it works end-to-end with one manual run:
 
@@ -95,15 +95,13 @@ GGG's trade API blocks most cloud-provider IPs (Claude Routines, GitHub Actions 
 
    You should see the task go from Ready → Running in Task Scheduler, get a Telegram ping when it finishes, and a `prices: <timestamp>` commit appear on GitHub.
 
-### Laptop-closed power settings
+### Laptop-closed behavior
 
-For the task to fire while the lid is closed, Windows needs to be allowed to wake and not sleep too aggressively. Once-off:
+The task is registered to **run whether you're logged on or not**, so it runs in the background (no window) and doesn't need you to be logged in. On a **Modern Standby (S0 Low Power Idle)** laptop — most newer machines; check with `powercfg /a` — Windows keeps running with the lid closed, so the task fires on schedule during standby on its own. No wake-timer or lid-action tweaks are needed.
 
-1. **Settings → System → Power & battery → Power mode**: any "Balanced" or "Best performance" mode is fine.
-2. **Control Panel → Power Options → Choose what closing the lid does**: when **Plugged in**, set both *Sleep button* and *Close the lid* to **Do nothing** (or **Sleep** if you'd rather the system actually suspend between runs — Task Scheduler's `WakeToRun` flag handles waking it back up either way).
-3. **Control Panel → Power Options → Change plan settings → Change advanced power settings → Sleep → Allow wake timers**: set to **Enable** for both On battery and Plugged in (or just Plugged in if you skip battery runs).
+The one requirement on this machine type: **keep the laptop on AC power** while the lid is closed. Windows throttles background work during Modern Standby on battery (and may hibernate after a while), so battery runs are unreliable — the task is configured AC-only by default.
 
-If the laptop is set to *Hibernate* on lid close, wake timers don't fire — use *Sleep* instead.
+> On an older **S3-sleep** laptop, closing the lid truly suspends the machine, so you'd additionally need lid-close set to *Sleep* (not *Hibernate* — wake timers don't fire from hibernate) and **Allow wake timers** enabled under Power Options; the `WakeToRun` flag then wakes it for each run. On a Modern Standby machine `WakeToRun` is just a harmless no-op.
 
 ### Wrapper script details
 
@@ -113,7 +111,7 @@ If the laptop is set to *Hibernate* on lid close, wake timers don't fire — use
 - on exit 0, stages `prices.db` + `latest.json`, commits them as `prices: <ISO timestamp>`, and pushes to the configured remote,
 - on non-zero exit, does nothing — the Python script has already sent a Telegram ping with the failure reason.
 
-`git push` uses Windows Credential Manager; once you've pushed once interactively, subsequent pushes from the scheduled task work without prompting.
+`git push` uses Windows Credential Manager. Because the task runs under a full stored-password logon (not S4U), it can read Credential Manager — so once you've pushed once interactively, pushes from the scheduled task work without prompting.
 
 ### Why not a Claude Routine
 
