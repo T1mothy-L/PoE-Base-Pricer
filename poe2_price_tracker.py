@@ -632,6 +632,14 @@ def main() -> int:
         return 1
     print()
 
+    # Telegram heads-up with the freshly-fetched exchange rates.
+    rate_bits = [
+        f"1 {cur} = {converter.rates_to_exalt[cur]:.4g} ex"
+        if converter.rates_to_exalt.get(cur) is not None else f"1 {cur} = n/a"
+        for cur in ("chaos", "divine", "annul")
+    ]
+    notify(f"📊 PoE2 {LEAGUE} rates — " + ", ".join(rate_bits))
+
     client = TradeClient(LEAGUE, POESESSID, USER_AGENT)
     # Bases already explicitly configured at FANOUT_LOWER_ILVL — used to
     # suppress fan-out when the user has their own ilvl-80 row for that base.
