@@ -73,30 +73,16 @@ TOP_N_COMBINED = 10            # cheapest after conversion to exalts
 FANOUT_82_TO_80_DIVINE_THRESHOLD = 1.0
 FANOUT_LOWER_ILVL = 80
 
-# Initial/floor interval between any two API requests (search + fetch share
-# this budget under GGG's `Ip` rule). Autotune may RAISE this based on
-# observed headers; it never drops below this value.
-SEARCH_INTERVAL_SECONDS = 6.5
-
-# Of the smallest tier GGG advertises, what fraction we aim to consume.
-# 0.8 = use up to 80% of the bucket on a sustained basis. Autotune sets
-# self.search_interval = (window / limit) / AUTOTUNE_TARGET_FRACTION for
-# whichever tier yields the most restrictive value.
-AUTOTUNE_TARGET_FRACTION = 0.8
-
-# Warn (just print, no throttle) when any tier crosses this fraction of
-# its limit. Mirrors AUTOTUNE_TARGET_FRACTION by design — if the
-# autotune is working, we should be steady-state below this and only see
-# warnings when external contention (browser, other clients on the IP)
-# pushes us over.
-RATE_LIMIT_WARN_FRACTION = 0.8
-
-# Panic-sleep when any tier crosses this fraction. Adds a one-shot hard
-# pause to the next _pace() call, regardless of the running autotune
-# interval. Circuit-breaker for when autotune lag + external contention
-# combine to threaten a ban.
-PANIC_FRACTION = 0.9
-PANIC_SLEEP_SECONDS = 10.0
+# Per-request pacing (search + fetch share GGG's `Ip` budget). GGG sends
+# scripts a tighter 300s bucket (30) than browsers (60), so we look at
+# the first response to figure out which one we're in and lock the
+# interval accordingly. By design, both values put us very close to the
+# limit -- we keep the per-base log line + RateLimitBanned auto-pause as
+# the safety net, but skip the 80% warn-print since "near limit" is the
+# normal operating point.
+INTERVAL_FOR_TIGHT_BUCKET = 10.5  # 30/300s -> 28.6 reqs/300s = 95% of budget
+INTERVAL_FOR_LOOSE_BUCKET = 6.0   # 60/300s -> 50.0 reqs/300s = 83% of budget
+LOOSE_BUCKET_LIMIT = 60           # threshold to flip to the looser interval
 
 # File paths (alongside this script)
 ROOT = Path(__file__).parent
@@ -141,54 +127,41 @@ class TradeClient:
                 "POESESSID", poesessid, domain=".pathofexile.com"
             )
         # Covers both search and fetch since GGG's `Ip` rule meters them
-        # against the same per-IP bucket. Was `_last_search_at`.
+        # against the same per-IP bucket.
         self._last_request_at = 0.0
-        # Autotune output; starts at the configured floor. Updated by
-        # _retune_pacing() after every response that came back with
-        # parseable rate-limit headers.
-        self.search_interval = SEARCH_INTERVAL_SECONDS
-        # Panic deadline (epoch seconds). Next _pace() waits until at
-        # least this point before proceeding, regardless of
-        # search_interval. Set by _check_rate_warnings when any tier
-        # crosses PANIC_FRACTION.
-        self._panic_until = 0.0
+        # Start with the conservative interval; switch to the looser one
+        # if the first response with a 300s tier shows a 60-limit.
+        self.search_interval = INTERVAL_FOR_TIGHT_BUCKET
         self.last_state: dict[tuple[str, int], tuple[int, int]] = {}
         self.peak_state: dict[tuple[str, int], tuple[int, int]] = {}
 
     def _pace(self) -> None:
-        """Sleep until enough time has elapsed since the previous request
-        (per self.search_interval) AND until any active panic-sleep
-        deadline has passed -- whichever is later."""
-        now = time.time()
-        target = max(
-            self._last_request_at + self.search_interval,
-            self._panic_until,
-        )
-        wait = target - now
+        """Sleep until self.search_interval has elapsed since the
+        previous request."""
+        elapsed = time.time() - self._last_request_at
+        wait = self.search_interval - elapsed
         if wait > 0:
             time.sleep(wait)
         self._last_request_at = time.time()
 
-    def _retune_pacing(self) -> None:
-        """Set self.search_interval to the most restrictive value implied
-        by the rate-limit tiers GGG currently advertises. Never goes
-        BELOW the configured floor (SEARCH_INTERVAL_SECONDS), so the
-        autotune can only slow us down vs the constant -- never speed us
-        up past what's safe to assume before any header has been seen."""
-        if not self.last_state:
-            return
-        candidates = [
-            (window / limit) / AUTOTUNE_TARGET_FRACTION
-            for (_rule, window), (_used, limit) in self.last_state.items()
-            if limit > 0
-        ]
-        if candidates:
-            self.search_interval = max(SEARCH_INTERVAL_SECONDS, *candidates)
+    def _set_interval_from_headers(self) -> None:
+        """Choose between the two pacing values based on whatever 300s
+        tier we've seen so far. Any 300s tier with the looser limit
+        (60) opts us into the faster pace; otherwise we stay
+        conservative."""
+        for (_rule, window), (_used, limit) in self.last_state.items():
+            if window == 300 and limit >= LOOSE_BUCKET_LIMIT:
+                self.search_interval = INTERVAL_FOR_LOOSE_BUCKET
+                return
+        self.search_interval = INTERVAL_FOR_TIGHT_BUCKET
 
     def _check_rate_warnings(self, response: requests.Response, label: str) -> None:
-        """Parse X-Rate-Limit-* headers; update last/peak state, warn at
-        80% of any tier, and raise RateLimitBanned if any tier shows an
-        active lockout."""
+        """Parse X-Rate-Limit-* headers; update last/peak state, lock in
+        the per-request pacing interval from the observed 300s tier
+        limit, and raise RateLimitBanned if any tier shows an active
+        lockout. The old 80%-warn print is intentionally gone -- we
+        operate near the limit on purpose, so steady-state warnings
+        would be noise."""
         rules = response.headers.get("X-Rate-Limit-Rules", "")
         for rule in [r.strip() for r in rules.split(",") if r.strip()]:
             # The -State header has used:window:ban_left per tier;
@@ -225,34 +198,11 @@ class TradeClient:
 
                 if ban_left > 0:
                     raise RateLimitBanned(ban_left, rule, window)
-                if limit > 0 and used >= limit * RATE_LIMIT_WARN_FRACTION:
-                    print(
-                        f"  ⚠️  rate warning [{label}] {rule} "
-                        f"window={window}s used={used}/{limit} "
-                        f"({used/limit:.0%})",
-                        file=sys.stderr,
-                    )
-                if limit > 0 and used >= limit * PANIC_FRACTION:
-                    # Only trigger once per panic window; if we're
-                    # already inside one, don't compound multiple 90%+
-                    # observations (sibling tiers in the same response,
-                    # or consecutive responses while the deadline is
-                    # still in the future).
-                    now = time.time()
-                    if now >= self._panic_until:
-                        self._panic_until = now + PANIC_SLEEP_SECONDS
-                        print(
-                            f"  ⏸ panic-sleep [{label}] {rule} "
-                            f"{window}s at {used}/{limit} "
-                            f"({used/limit:.0%}); next request gated "
-                            f"+{PANIC_SLEEP_SECONDS}s",
-                            file=sys.stderr,
-                        )
 
-        # Reflect the latest headers in the autotune so the NEXT
-        # outgoing request paces against the freshest view of GGG's
-        # advertised limits.
-        self._retune_pacing()
+        # Re-evaluate which interval applies given the latest headers.
+        # In practice this only matters on the first response of a run
+        # (locks in tight vs loose), but it's cheap to do every time.
+        self._set_interval_from_headers()
 
     def search(self, base: str, min_ilvl: int, currency: str) -> dict | None:
         self._pace()
