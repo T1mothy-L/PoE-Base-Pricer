@@ -259,9 +259,6 @@ class TradeClient:
         can distinguish 'empty' from 'errored')."""
         if not hashes:
             return []
-        # Same per-IP budget as search -- pace identically so the
-        # autotune math actually balances. Was unpaced previously.
-        self._pace()
         url = f"{TRADE_BASE}/fetch/{','.join(hashes[:10])}"
         try:
             r = self.session.get(url, params={"query": query_id}, timeout=30)
