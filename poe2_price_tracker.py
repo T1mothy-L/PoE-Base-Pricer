@@ -127,8 +127,11 @@ class TradeClient:
                 "POESESSID", poesessid, domain=".pathofexile.com"
             )
         # Covers both search and fetch since GGG's `Ip` rule meters them
-        # against the same per-IP bucket.
-        self._last_request_at = 0.0
+        # against the same per-IP bucket. None = no request has been sent
+        # yet, so the first _pace() should not wait (we assume a clean
+        # bucket on startup and let the first response reveal the
+        # actual state).
+        self._last_request_at: float | None = None
         # Start with the conservative interval; switch to the looser one
         # if the first response with a 300s tier shows a 60-limit.
         self.search_interval = INTERVAL_FOR_TIGHT_BUCKET
@@ -137,11 +140,14 @@ class TradeClient:
 
     def _pace(self) -> None:
         """Sleep until self.search_interval has elapsed since the
-        previous request."""
-        elapsed = time.time() - self._last_request_at
-        wait = self.search_interval - elapsed
-        if wait > 0:
-            time.sleep(wait)
+        previous request. The very first call no-ops because we assume
+        a clean bucket -- there's nothing to pace against until we've
+        actually sent something."""
+        if self._last_request_at is not None:
+            elapsed = time.time() - self._last_request_at
+            wait = self.search_interval - elapsed
+            if wait > 0:
+                time.sleep(wait)
         self._last_request_at = time.time()
 
     def _set_interval_from_headers(self) -> None:
