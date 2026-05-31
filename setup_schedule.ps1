@@ -3,10 +3,11 @@
 # time to change the schedule.
 #
 # The task is registered to "run whether you are logged on or not" (background,
-# no console window), so it fires with the lid closed during Modern Standby
-# without waiting for you to log in. That requires a stored credential, so this
-# script PROMPTS ONCE for your Windows password (Task Scheduler stores it
-# encrypted). A full-logon task keeps git push working via Credential Manager.
+# no console window) via an S4U logon, so it fires with the lid closed during
+# Modern Standby without waiting for you to log in -- and needs NO stored
+# password (it works even with Windows Hello-only sign-in enforced). Because an
+# S4U task can't read Credential Manager, git push uses an SSH deploy key; see
+# the README "Running on a schedule" section for the one-time SSH setup.
 #
 # Defaults: every couple of hours, runs only when plugged in. Adjust the
 # variables below to taste.
@@ -53,17 +54,14 @@ $settings = New-ScheduledTaskSettingsSet `
     -ExecutionTimeLimit (New-TimeSpan -Hours $timeoutHours) `
     -MultipleInstances IgnoreNew
 
-# "Run whether user is logged on or not" needs a stored credential. We register
-# with -User/-Password (a Password-logon task) rather than a -Principal so the
-# task does a FULL logon in the background: that gives it the user PATH and
-# Credential Manager / DPAPI access, so run_tracker.ps1's `git push` works while
-# you're logged off. (LogonType S4U avoids the password but can't read Credential
-# Manager, which would break the push.) The prompt below is fine because this
-# setup script is run by hand in an elevated prompt.
-$sec  = Read-Host "Windows password for $env:USERNAME (stored by Task Scheduler so the task can run while you're logged off)" -AsSecureString
-$bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($sec)
-$pw   = [Runtime.InteropServices.Marshal]::PtrToStringAuto($bstr)
-[Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
+# S4U ("Service For User") runs the task whether or not you're logged on WITHOUT
+# storing a password, so it's unaffected by the Windows Hello-only sign-in
+# setting. The trade-off -- no Credential Manager access -- is handled by pushing
+# over SSH with a passphrase-less deploy key (one-time setup in the README).
+$principal = New-ScheduledTaskPrincipal `
+    -UserId $env:USERNAME `
+    -LogonType S4U `
+    -RunLevel Limited
 
 Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
 Register-ScheduledTask `
@@ -71,9 +69,7 @@ Register-ScheduledTask `
     -Trigger $trigger `
     -Action $action `
     -Settings $settings `
-    -User $env:USERNAME `
-    -Password $pw `
-    -RunLevel Limited `
+    -Principal $principal `
     -Description 'PoE2 white-base price tracker. Runs every few hours and pushes prices.db + latest.json to GitHub on success.' | Out-Null
 
 Write-Host "Registered '$taskName'. Upcoming runs:"

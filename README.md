@@ -85,7 +85,9 @@ GGG's trade API blocks most cloud-provider IPs (Claude Routines, GitHub Actions 
    .\setup_schedule.ps1
    ```
 
-   This registers a background scheduled task named **PoE2 Price Tracker** that runs every couple of hours and only when plugged in. It runs **whether or not you're logged on** (no console window pops up), so it fires even with the lid closed. To store the credential that allows that, the script **prompts once for your Windows password** — Task Scheduler keeps it encrypted. Edit the variables at the top of the script to change the interval, anchor, or timeout.
+   This registers a background scheduled task named **PoE2 Price Tracker** that runs every couple of hours and only when plugged in. It runs **whether or not you're logged on** (an S4U logon — no console window pops up, no stored password), so it fires even with the lid closed, and it works even with Windows Hello-only sign-in enforced. Edit the variables at the top of the script to change the interval, anchor, or timeout.
+
+   > Because an S4U task can't read Windows Credential Manager, `git push` is done over SSH with a repo-scoped deploy key — do the one-time **[SSH deploy key setup](#git-push-from-the-background-task-ssh-deploy-key)** below *before* the first scheduled run, or the push will fail.
 
 3. Confirm it works end-to-end with one manual run:
 
@@ -103,15 +105,33 @@ The one requirement on this machine type: **keep the laptop on AC power** while 
 
 > On an older **S3-sleep** laptop, closing the lid truly suspends the machine, so you'd additionally need lid-close set to *Sleep* (not *Hibernate* — wake timers don't fire from hibernate) and **Allow wake timers** enabled under Power Options; the `WakeToRun` flag then wakes it for each run. On a Modern Standby machine `WakeToRun` is just a harmless no-op.
 
+### git push from the background task (SSH deploy key)
+
+The task runs under an **S4U** logon (so it needs no stored password and isn't blocked by Windows Hello-only sign-in). S4U can't read Windows Credential Manager, so HTTPS git auth won't work from it — instead the repo pushes over **SSH** using a passphrase-less, repo-scoped **deploy key**. One-time setup (PowerShell, in the repo):
+
+```powershell
+# 1. Generate a passphrase-less key (cmd /c gives a reliable empty passphrase)
+cmd /c "ssh-keygen -t ed25519 -C `"poe2-tracker@$env:COMPUTERNAME`" -f `"$env:USERPROFILE\.ssh\poe2_tracker`" -N `"`" -q"
+
+# 2. Pre-trust github.com so the non-interactive push never hits a host-key prompt
+ssh -o StrictHostKeyChecking=accept-new -T git@github.com   # one connection seeds known_hosts
+
+# 3. Pin THIS repo's git to use only that key, via Windows OpenSSH
+git config --local core.sshCommand 'C:/Windows/System32/OpenSSH/ssh.exe -i ~/.ssh/poe2_tracker -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new'
+
+# 4. Point the remote at SSH
+git remote set-url origin git@github.com:T1mothy-L/PoE-Base-Pricer.git
+```
+
+Then add `~/.ssh/poe2_tracker.pub` to the GitHub repo under **Settings → Deploy keys → Add deploy key**, with **Allow write access** ticked. Verify with `ssh -i $env:USERPROFILE\.ssh\poe2_tracker -T git@github.com` (expect `Hi <owner>/<repo>! You've successfully authenticated`) and a manual `git push`. The `core.sshCommand` / remote settings live in `.git/config` (local, never committed), so they're per-machine.
+
 ### Wrapper script details
 
 `run_tracker.ps1` is what Task Scheduler invokes. It:
 
 - runs `python poe2_price_tracker.py` in the repo dir,
-- on exit 0, stages `prices.db` + `latest.json`, commits them as `prices: <ISO timestamp>`, and pushes to the configured remote,
+- on exit 0, stages `prices.db` + `latest.json`, commits them as `prices: <ISO timestamp>`, and pushes to the configured remote (over SSH, per above),
 - on non-zero exit, does nothing — the Python script has already sent a Telegram ping with the failure reason.
-
-`git push` uses Windows Credential Manager. Because the task runs under a full stored-password logon (not S4U), it can read Credential Manager — so once you've pushed once interactively, pushes from the scheduled task work without prompting.
 
 ### Why not a Claude Routine
 
