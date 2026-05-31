@@ -80,7 +80,7 @@ SEARCH_INTERVAL_SECONDS = 6.5
 # Warn (don't auto-throttle) if the 60/300s tier state climbs to this value or
 # higher. 48 = 80% of 60. Smoke alarm in case GGG tightens limits or someone
 # else hits the same IP.
-RATE_LIMIT_WARN_THRESHOLD = 50
+RATE_LIMIT_WARN_FRACTION = 0.8
 
 # File paths (alongside this script)
 ROOT = Path(__file__).parent
@@ -100,7 +100,12 @@ class TradeAuthError(Exception):
     """Raised when the trade API returns 401/403 — the whole run is doomed
     because every subsequent search would hit the same wall. Caught at the
     top of main() to abort fast and notify."""
-
+class RateLimitBanned(Exception):
+    def __init__(self, seconds: int, rule: str, window: int):
+        self.seconds = seconds
+        self.rule = rule
+        self.window = window
+        super().__init__(f"Banned on {rule} {window}s tier for {seconds}s")
 
 # ============================================================
 # PoE2 Trade API client
@@ -120,6 +125,8 @@ class TradeClient:
                 "POESESSID", poesessid, domain=".pathofexile.com"
             )
         self._last_search_at = 0.0  # monotonic-ish pacing anchor
+        self.last_state: dict[tuple[str, int], tuple[int, int]] = {}
+        self.peak_state: dict[tuple[str, int], tuple[int, int]] = {}
 
     def _pace_search(self) -> None:
         elapsed = time.time() - self._last_search_at
@@ -129,11 +136,27 @@ class TradeClient:
         self._last_search_at = time.time()
 
     def _check_rate_warnings(self, response: requests.Response, label: str) -> None:
-        """Parse X-Rate-Limit-* headers; print a warning if any tier is at or
-        above the 80% threshold, or if we're banned."""
+        """Parse X-Rate-Limit-* headers; update last/peak state, warn at
+        80% of any tier, and raise RateLimitBanned if any tier shows an
+        active lockout."""
         rules = response.headers.get("X-Rate-Limit-Rules", "")
         for rule in [r.strip() for r in rules.split(",") if r.strip()]:
+            # The -State header has used:window:ban_left per tier;
+            # the bare rule header has hits:window:ban_period per tier
+            # -- we need the `hits` (= limit) from the latter.
             state = response.headers.get(f"X-Rate-Limit-{rule}-State", "")
+            limits = response.headers.get(f"X-Rate-Limit-{rule}", "")
+
+            window_limits: dict[int, int] = {}
+            for piece in limits.split(","):
+                parts = piece.split(":")
+                if len(parts) == 3:
+                    try:
+                        hits, window, _ = (int(p) for p in parts)
+                        window_limits[window] = hits
+                    except ValueError:
+                        continue
+
             for tier in state.split(","):
                 parts = tier.split(":")
                 if len(parts) != 3:
@@ -142,16 +165,21 @@ class TradeClient:
                     used, window, ban_left = (int(p) for p in parts)
                 except ValueError:
                     continue
+
+                limit = window_limits.get(window, 0)
+                if limit > 0:
+                    self.last_state[(rule, window)] = (used, limit)
+                    prev_used, _ = self.peak_state.get((rule, window), (0, limit))
+                    if used > prev_used:
+                        self.peak_state[(rule, window)] = (used, limit)
+
                 if ban_left > 0:
+                    raise RateLimitBanned(ban_left, rule, window)
+                if limit > 0 and used >= limit * RATE_LIMIT_WARN_FRACTION:
                     print(
-                        f"  🚫 BANNED [{label}] rule={rule} window={window}s "
-                        f"remaining={ban_left}s",
-                        file=sys.stderr,
-                    )
-                elif window == 300 and used >= RATE_LIMIT_WARN_THRESHOLD:
-                    print(
-                        f"  ⚠️  rate warning [{label}] {rule} tier={window}s "
-                        f"used={used} (threshold={RATE_LIMIT_WARN_THRESHOLD})",
+                        f"  ⚠️  rate warning [{label}] {rule} "
+                        f"window={window}s used={used}/{limit} "
+                        f"({used/limit:.0%})",
                         file=sys.stderr,
                     )
 
@@ -521,8 +549,33 @@ def main() -> int:
 
     try:
         for i, item in enumerate(items, 1):
-            print(f"[{i}/{len(items)}] {item['base']} ilvl≥{item['min_ilvl']}")
-            result = process_item(client, converter, item)
+            state_suffix = ""
+            if client.last_state:
+                (rule, window), (used, limit) = max(
+                    client.last_state.items(),
+                    key=lambda kv: kv[1][0] / max(kv[1][1], 1),
+                )
+                state_suffix = (
+                    f"  [{rule} {window}s: {used}/{limit} ({used/limit:.0%})]"
+                )
+            ts = datetime.now().strftime("%H:%M:%S")
+            print(
+                f"[{i}/{len(items)}] {ts}  {item['base']} "
+                f"ilvl≥{item['min_ilvl']}{state_suffix}"
+            )
+            try:
+                result = process_item(client, converter, item)
+            except RateLimitBanned as ban:
+                msg = (
+                    f"banned on {ban.rule} {ban.window}s tier; "
+                    f"sleeping {ban.seconds}s + 5s buffer"
+                )
+                print(f"  🚫 {msg}", file=sys.stderr)
+                notify(f"⏸ PoE2 tracker paused: {msg}")
+                time.sleep(ban.seconds + 5)
+                # Retry the same item once the lockout clears. A second
+                # ban during retry propagates so the run aborts cleanly.
+                result = process_item(client, converter, item)
             print_result_line(result)
             results.append(result)
 
@@ -579,6 +632,12 @@ def main() -> int:
     print(f"✓ Wrote {len(results)} rows to {DB_PATH.name}")
     print(f"✓ Wrote {LATEST_PATH.name}")
     notify(build_success_message(results, LEAGUE))
+    if client.peak_state:
+        peaks = ", ".join(
+            f"{r} {w}s={u}/{l} ({u/l:.0%})"
+            for (r, w), (u, l) in sorted(client.peak_state.items())
+        )
+        print(f"Peak rate-limit usage: {peaks}")
     return 0
 
 
