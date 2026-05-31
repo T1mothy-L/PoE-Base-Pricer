@@ -5,6 +5,11 @@ __pycache__/
 .venv/
 venv/
 
+# Runtime log + transient local error report (local-only signals)
+tracker.log
+tracker.log.*
+errors.json
+
 # Filter-automation work in progress — not yet ready to push.
 update_filter.py
 filter_config.json

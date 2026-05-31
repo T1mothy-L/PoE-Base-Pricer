@@ -17,12 +17,14 @@ Environment variables:
 """
 
 import json
+import logging
 import os
 import sqlite3
 import statistics
 import sys
 import time
 from datetime import datetime, timezone
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from urllib.parse import quote
 
@@ -84,11 +86,36 @@ INTERVAL_FOR_TIGHT_BUCKET = 10.5  # 30/300s -> 28.6 reqs/300s = 95% of budget
 INTERVAL_FOR_LOOSE_BUCKET = 6.0   # 60/300s -> 50.0 reqs/300s = 83% of budget
 LOOSE_BUCKET_LIMIT = 60           # threshold to flip to the looser interval
 
+# After the full items.json pass, any item that hit an HTTP/network error gets
+# one more attempt. We wait this long first to let a transient blip clear.
+TRADE_RETRY_WAIT = 30  # seconds
+
 # File paths (alongside this script)
 ROOT = Path(__file__).parent
 ITEMS_PATH = ROOT / "items.json"
 LATEST_PATH = ROOT / "latest.json"
 DB_PATH = ROOT / "prices.db"
+LOG_PATH = ROOT / "tracker.log"
+ERRORS_PATH = ROOT / "errors.json"
+
+# Logging: warnings and errors are written to a rotating file (tracker.log) and
+# echoed to stderr; normal progress stays on stdout via print(). Configured at
+# import time so even the bottom-level crash handler can use it.
+log = logging.getLogger("poe2_tracker")
+log.setLevel(logging.INFO)
+log.propagate = False
+_file_handler = RotatingFileHandler(
+    LOG_PATH, maxBytes=1_000_000, backupCount=3, encoding="utf-8"
+)
+_file_handler.setLevel(logging.INFO)
+_file_handler.setFormatter(
+    logging.Formatter("%(asctime)s %(levelname)s %(message)s")
+)
+_stream_handler = logging.StreamHandler(sys.stderr)
+_stream_handler.setLevel(logging.WARNING)  # console keeps today's stderr look
+_stream_handler.setFormatter(logging.Formatter("%(message)s"))
+log.addHandler(_file_handler)
+log.addHandler(_stream_handler)
 
 # Endpoints
 TRADE_BASE = "https://www.pathofexile.com/api/trade2"
@@ -96,6 +123,11 @@ SCOUT_BASE = "https://poe2scout.com/api"
 # Realm path for PoE2 in poe2scout. If rate fetches return 404, verify the
 # realm value at https://poe2scout.com/api/Realms in a browser.
 SCOUT_REALM_PATH = "poe2"
+# poe2scout currency-rate retry on HTTP 429. The budget is SHARED across all
+# currencies in one fetch_rates() pass, not per-currency, because poe2scout's
+# 429 is a single IP/endpoint bucket every currency request draws from.
+SCOUT_MAX_RETRIES = 5    # total 429 retries across chaos/divine/annul
+SCOUT_RETRY_WAIT = 60    # seconds to wait before each 429 retry
 
 
 class TradeAuthError(Exception):
@@ -236,7 +268,7 @@ class TradeClient:
         try:
             r = self.session.post(url, data=json.dumps(body), timeout=30)
         except requests.RequestException as e:
-            print(f"  search network error [{base}/{currency}]: {e}", file=sys.stderr)
+            log.warning(f"  search network error [{base}/{currency}]: {e}")
             return None
         self._check_rate_warnings(r, "search")
         if r.status_code in (401, 403):
@@ -245,10 +277,9 @@ class TradeClient:
                 f"{r.text[:200]}"
             )
         if r.status_code != 200:
-            print(
+            log.warning(
                 f"  search HTTP {r.status_code} [{base}/{currency}]: "
-                f"{r.text[:150]}",
-                file=sys.stderr,
+                f"{r.text[:150]}"
             )
             return None
         return r.json()
@@ -263,7 +294,7 @@ class TradeClient:
         try:
             r = self.session.get(url, params={"query": query_id}, timeout=30)
         except requests.RequestException as e:
-            print(f"  fetch network error: {e}", file=sys.stderr)
+            log.warning(f"  fetch network error: {e}")
             return None
         self._check_rate_warnings(r, "fetch")
         if r.status_code in (401, 403):
@@ -271,7 +302,7 @@ class TradeClient:
                 f"fetch HTTP {r.status_code}: {r.text[:200]}"
             )
         if r.status_code != 200:
-            print(f"  fetch HTTP {r.status_code}: {r.text[:150]}", file=sys.stderr)
+            log.warning(f"  fetch HTTP {r.status_code}: {r.text[:150]}")
             return None
         return r.json().get("result") or []
 
@@ -293,39 +324,55 @@ class CurrencyConverter:
         self.rates_to_exalt: dict = {"exalted": 1.0}  # base unit
 
     def fetch_rates(self) -> None:
-        """Populate self.rates_to_exalt for chaos, divine, annul."""
+        """Populate self.rates_to_exalt for chaos, divine, annul.
+
+        On HTTP 429 we wait SCOUT_RETRY_WAIT and retry, drawing from a single
+        retry budget shared across all three currencies — poe2scout meters them
+        against one IP/endpoint bucket, so a per-currency budget would only burn
+        extra waits. Once the budget is exhausted, a further 429 is treated like
+        any other non-200 (logged, rate left None)."""
+        retries_left = SCOUT_MAX_RETRIES
         for currency in ["chaos", "divine", "annul"]:
             url = (
                 f"{SCOUT_BASE}/{SCOUT_REALM_PATH}"
                 f"/Leagues/{quote(self.league)}/Currencies/{currency}"
             )
-            try:
-                r = self.session.get(
-                    url, params={"ReferenceCurrency": "exalted"}, timeout=30
-                )
-            except requests.RequestException as e:
-                print(f"  rate fetch error [{currency}]: {e}", file=sys.stderr)
-                self.rates_to_exalt[currency] = None
-                continue
-            if r.status_code != 200:
-                print(
-                    f"  rate fetch HTTP {r.status_code} [{currency}]: "
-                    f"{r.text[:150]}",
-                    file=sys.stderr,
-                )
-                self.rates_to_exalt[currency] = None
-                continue
-            try:
-                data = r.json()
-                rate = data.get("CurrentPrice")
-            except ValueError:
-                rate = None
-            if rate is None:
-                print(f"  no CurrentPrice for {currency}", file=sys.stderr)
-                self.rates_to_exalt[currency] = None
-            else:
-                self.rates_to_exalt[currency] = float(rate)
-                print(f"  rate: 1 {currency} = {rate:.4f} exalted")
+            while True:
+                try:
+                    r = self.session.get(
+                        url, params={"ReferenceCurrency": "exalted"}, timeout=30
+                    )
+                except requests.RequestException as e:
+                    log.warning(f"  rate fetch error [{currency}]: {e}")
+                    self.rates_to_exalt[currency] = None
+                    break
+                if r.status_code == 429 and retries_left > 0:
+                    retries_left -= 1
+                    log.warning(
+                        f"  rate fetch HTTP 429 [{currency}]; waiting "
+                        f"{SCOUT_RETRY_WAIT}s ({retries_left} retries left)"
+                    )
+                    time.sleep(SCOUT_RETRY_WAIT)
+                    continue  # re-request the same currency
+                if r.status_code != 200:
+                    log.warning(
+                        f"  rate fetch HTTP {r.status_code} [{currency}]: "
+                        f"{r.text[:150]}"
+                    )
+                    self.rates_to_exalt[currency] = None
+                    break
+                try:
+                    data = r.json()
+                    rate = data.get("CurrentPrice")
+                except ValueError:
+                    rate = None
+                if rate is None:
+                    log.warning(f"  no CurrentPrice for {currency}")
+                    self.rates_to_exalt[currency] = None
+                else:
+                    self.rates_to_exalt[currency] = float(rate)
+                    print(f"  rate: 1 {currency} = {rate:.4f} exalted")
+                break
 
     def to_exalts(self, amount: float, currency: str) -> float | None:
         rate = self.rates_to_exalt.get(currency)
@@ -408,6 +455,26 @@ def process_item(client: TradeClient, converter: CurrencyConverter,
     }
 
 
+def run_item(client: TradeClient, converter: CurrencyConverter,
+             item: dict) -> dict:
+    """process_item wrapped with the single RateLimitBanned sleep+retry, shared
+    by the main loop and the end-of-run retry round. A second ban during the
+    retry — or any TradeAuthError — propagates to main()'s handler."""
+    try:
+        return process_item(client, converter, item)
+    except RateLimitBanned as ban:
+        msg = (
+            f"banned on {ban.rule} {ban.window}s tier; "
+            f"sleeping {ban.seconds}s + 5s buffer"
+        )
+        log.warning(f"🚫 {msg}")
+        notify(f"⏸ PoE2 tracker paused: {msg}")
+        time.sleep(ban.seconds + 5)
+        # Retry the same item once the lockout clears. A second ban during
+        # retry propagates so the run aborts cleanly.
+        return process_item(client, converter, item)
+
+
 # ============================================================
 # Persistence
 # ============================================================
@@ -470,6 +537,19 @@ def write_outputs(results: list, rates: dict, league: str,
         json.dump(slim, f, indent=2)
 
 
+def write_errors_file(errored: list, league: str, path: Path) -> None:
+    """Write a local, gitignored report of bases that still errored after the
+    retry round, so a partial run leaves a breadcrumb of what to investigate."""
+    payload = {
+        "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "league": league,
+        "items": [{"base": r["base"], "min_ilvl": r["min_ilvl"]}
+                  for r in errored],
+    }
+    with open(path, "w") as f:
+        json.dump(payload, f, indent=2)
+
+
 # ============================================================
 # Notifications (Telegram, opt-in via env vars)
 # ============================================================
@@ -496,13 +576,12 @@ def notify(message: str) -> None:
             timeout=10,
         )
         if r.status_code != 200:
-            print(
+            log.warning(
                 f"  notify: Telegram returned HTTP {r.status_code}: "
-                f"{r.text[:150]}",
-                file=sys.stderr,
+                f"{r.text[:150]}"
             )
     except requests.RequestException as e:
-        print(f"  notify: send failed: {e}", file=sys.stderr)
+        log.warning(f"  notify: send failed: {e}")
 
 
 def build_success_message(results: list, league: str) -> str:
@@ -527,13 +606,13 @@ def build_success_message(results: list, league: str) -> str:
 
 def main() -> int:
     if not POESESSID:
-        print("ERROR: POESESSID env var not set.", file=sys.stderr)
-        print("Set it via: export POESESSID=<your_session_id>", file=sys.stderr)
+        log.error("ERROR: POESESSID env var not set.")
+        log.error("Set it via: export POESESSID=<your_session_id>")
         notify("✗ PoE2 tracker: POESESSID env var not set")
         return 1
 
     if not ITEMS_PATH.exists():
-        print(f"ERROR: {ITEMS_PATH} not found.", file=sys.stderr)
+        log.error(f"ERROR: {ITEMS_PATH} not found.")
         notify(f"✗ PoE2 tracker: {ITEMS_PATH.name} not found")
         return 1
 
@@ -548,7 +627,7 @@ def main() -> int:
     if all(v is None for k, v in converter.rates_to_exalt.items() if k != "exalted"):
         msg = ("no currency rates fetched from poe2scout. "
                "Check SCOUT_REALM_PATH and league name.")
-        print(f"ERROR: {msg}", file=sys.stderr)
+        log.error(f"ERROR: {msg}")
         notify(f"✗ PoE2 tracker: {msg}")
         return 1
     print()
@@ -590,19 +669,7 @@ def main() -> int:
                 f"[{i}/{len(items)}] {ts}  {item['base']} "
                 f"ilvl≥{item['min_ilvl']}{state_suffix}"
             )
-            try:
-                result = process_item(client, converter, item)
-            except RateLimitBanned as ban:
-                msg = (
-                    f"banned on {ban.rule} {ban.window}s tier; "
-                    f"sleeping {ban.seconds}s + 5s buffer"
-                )
-                print(f"  🚫 {msg}", file=sys.stderr)
-                notify(f"⏸ PoE2 tracker paused: {msg}")
-                time.sleep(ban.seconds + 5)
-                # Retry the same item once the lockout clears. A second
-                # ban during retry propagates so the run aborts cleanly.
-                result = process_item(client, converter, item)
+            result = run_item(client, converter, item)
             print_result_line(result)
             results.append(result)
 
@@ -639,11 +706,39 @@ def main() -> int:
                                "min_ilvl": FANOUT_LOWER_ILVL}
                 print(f"     ↳ {item['base']} ilvl≥{FANOUT_LOWER_ILVL} "
                       f"(fan-out: {fanout_reason})")
-                fanout_result = process_item(client, converter, fanout_item)
+                fanout_result = run_item(client, converter, fanout_item)
                 print_result_line(fanout_result, indent="       ")
                 results.append(fanout_result)
 
             print()  # trailing blank line between items
+
+        # Second chance: items that hit an HTTP/network error on the first
+        # pass often recover after a short pause. Collect them, wait once, and
+        # re-run each failed query. We rebuild the query from the result dict
+        # (process_item needs only base + min_ilvl), so fan-out rows are
+        # covered too; we deliberately don't re-trigger fan-out for an 82 row
+        # that newly succeeds on retry — a missing fan-out row is picked up
+        # next run.
+        errored_first = [r for r in results if r["errored"]]
+        if errored_first:
+            names = ", ".join(r["base"] for r in errored_first[:5])
+            if len(errored_first) > 5:
+                names += f", +{len(errored_first) - 5} more"
+            log.warning(
+                f"{len(errored_first)} item(s) errored on first pass "
+                f"[{names}]; retrying after {TRADE_RETRY_WAIT}s"
+            )
+            time.sleep(TRADE_RETRY_WAIT)
+            for idx, r in enumerate(results):
+                if not r["errored"]:
+                    continue
+                retry_item = {"base": r["base"], "min_ilvl": r["min_ilvl"]}
+                ts = datetime.now().strftime("%H:%M:%S")
+                print(f"↻ {ts}  retry {retry_item['base']} "
+                      f"ilvl≥{retry_item['min_ilvl']}")
+                results[idx] = run_item(client, converter, retry_item)
+                print_result_line(results[idx])
+                print()
     except TradeAuthError as e:
         msg = (
             f"trade API returned auth error ({e}). Causes (in order of "
@@ -652,29 +747,48 @@ def main() -> int:
             "connection; (2) POESESSID is stale -- re-grab from browser "
             "devtools."
         )
-        print(f"ERROR: {msg}", file=sys.stderr)
+        log.error(f"ERROR: {msg}")
         notify(f"✗ PoE2 tracker: trade API forbidden (likely IP-blocked).")
         return 1
 
-    # Refuse to overwrite latest.json / prices.db if any item errored. We'd
-    # rather keep yesterday's good data than commit a partially-corrupt run.
+    # After the retry round, decide what to write. Items that still errored are
+    # dropped from this run's outputs and recorded in a local errors.json. If
+    # at least one item is good we write partial outputs and exit 0, so the
+    # wrapper commits/publishes what we have; if EVERY item errored we keep the
+    # last good data instead of publishing an empty latest.json.
     errored = [r for r in results if r["errored"]]
+    good = [r for r in results if not r["errored"]]
+
     if errored:
         names = ", ".join(f"{r['base']}" for r in errored[:5])
         if len(errored) > 5:
             names += f", +{len(errored) - 5} more"
-        msg = (f"{len(errored)}/{len(results)} item(s) hit HTTP errors "
-               f"[{names}]. Not writing outputs.")
-        print(f"ERROR: {msg}", file=sys.stderr)
-        notify(f"✗ PoE2 tracker: {msg}")
-        return 1
+        write_errors_file(errored, LEAGUE, ERRORS_PATH)
+        if not good:
+            msg = (f"all {len(results)} item(s) still errored after retry "
+                   f"[{names}]. Keeping last good data, not writing outputs.")
+            log.error(f"ERROR: {msg}")
+            notify(f"✗ PoE2 tracker: {msg}")
+            return 1
+        msg = (f"{len(errored)}/{len(results)} item(s) still errored after "
+               f"retry [{names}]; writing partial outputs.")
+        log.warning(msg)
+        notify(f"⚠ PoE2 {LEAGUE}: partial run, {len(errored)} base(s) "
+               f"errored [{names}]")
+    else:
+        # Clean run: clear any stale report so errors.json always reflects the
+        # most recent run.
+        ERRORS_PATH.unlink(missing_ok=True)
 
     write_outputs(
-        results, converter.rates_to_exalt, LEAGUE, DB_PATH, LATEST_PATH
+        good, converter.rates_to_exalt, LEAGUE, DB_PATH, LATEST_PATH
     )
-    print(f"✓ Wrote {len(results)} rows to {DB_PATH.name}")
+    print(f"✓ Wrote {len(good)} rows to {DB_PATH.name}")
     print(f"✓ Wrote {LATEST_PATH.name}")
-    notify(build_success_message(results, LEAGUE))
+    if errored:
+        print(f"⚠ {len(errored)} base(s) errored — see {ERRORS_PATH.name}")
+    else:
+        notify(build_success_message(good, LEAGUE))
     if client.peak_state:
         peaks = ", ".join(
             f"{r} {w}s={u}/{l} ({u/l:.0%})"
@@ -690,8 +804,13 @@ if __name__ == "__main__":
     except SystemExit:
         raise
     except BaseException as e:
-        # Unhandled crash — best-effort notify, then re-raise so the
-        # traceback still prints and the process exits non-zero.
+        # Unhandled crash — record the traceback to the log file, best-effort
+        # notify, then re-raise so the traceback still prints and the process
+        # exits non-zero.
+        try:
+            log.exception("unhandled crash")
+        except Exception:
+            pass
         try:
             notify(f"✗ PoE2 tracker crashed: {type(e).__name__}: {str(e)[:300]}")
         except Exception:
