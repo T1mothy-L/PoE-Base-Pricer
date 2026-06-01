@@ -4,7 +4,7 @@ Polls the official PoE2 trade API for a configurable list of white (normal) item
 
 Outputs two things every run:
 
-- **`latest.json`** — slim current state `[{base, min_ilvl, median_exalts}, ...]`. For downstream consumers (e.g. the future item filter step).
+- **`latest.json`** — slim current state `{rates_to_exalt: {exalted, chaos, divine, annul}, items: [{base, min_ilvl, median_exalts}, ...]}`. The per-run poe2scout rates ride along so consumers can re-express exalt prices in any currency without opening `prices.db`. For downstream consumers (e.g. the future item filter step).
 - **`prices.db`** — append-only SQLite history with currency rates stored per run, so historical medians can be re-expressed in any currency later.
 
 Designed to run as a Claude Routine using this repo as persistent storage. Also works locally.

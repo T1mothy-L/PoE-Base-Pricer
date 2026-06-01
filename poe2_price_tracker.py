@@ -4,7 +4,8 @@ PoE2 white-base price tracker.
 Reads items.json, queries the official PoE2 trade API across 4 currencies per item,
 converts all listings to exalt-equivalents via poe2scout rates, computes the median
 of the cheapest 10 listings, and writes:
-  - latest.json:  slim current state, for downstream consumers (item filter step)
+  - latest.json:  slim current state {rates_to_exalt, items}, for downstream
+                  consumers (item filter step)
   - prices.db:    append-only SQLite history with currency rates per run
 
 Designed to run as a Claude Routine on a 1-3hr schedule, using the cloned repo as
@@ -528,11 +529,19 @@ def write_outputs(results: list, rates: dict, league: str,
     conn.commit()
     conn.close()
 
-    slim = [
-        {"base": r["base"], "min_ilvl": r["min_ilvl"],
-         "median_exalts": r["median_exalts"]}
-        for r in results
-    ]
+    # latest.json carries the per-run poe2scout rates alongside the item
+    # medians so a downstream consumer can re-express exalt prices in any
+    # currency without opening prices.db. rates is converter.rates_to_exalt,
+    # i.e. {"exalted": 1.0, "chaos": ..., "divine": ..., "annul": ...} with
+    # None for any currency whose rate fetch failed this run.
+    slim = {
+        "rates_to_exalt": rates,
+        "items": [
+            {"base": r["base"], "min_ilvl": r["min_ilvl"],
+             "median_exalts": r["median_exalts"]}
+            for r in results
+        ],
+    }
     with open(latest_path, "w") as f:
         json.dump(slim, f, indent=2)
 
