@@ -10,6 +10,9 @@ tracker.log
 tracker.log.*
 errors.json
 
+# Local-only session handoff notes
+handoff.md
+
 # Filter-automation work in progress — not yet ready to push.
 update_filter.py
 filter_config.json
