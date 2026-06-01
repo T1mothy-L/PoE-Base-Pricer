@@ -72,6 +72,13 @@ Register-ScheduledTask `
     -Principal $principal `
     -Description 'PoE2 white-base price tracker. Runs every few hours and pushes prices.db + latest.json to GitHub on success.' | Out-Null
 
+# Arm the WakeToRun RTC wake timer. On this Modern Standby machine the wake timer only commits when
+# a task's trigger is applied via Set-ScheduledTask (modifying an existing task) -- NOT when set via
+# Register-ScheduledTask above. Without this re-apply, WakeToRun is silently ignored and the task
+# never wakes the laptop from standby (it only catches up on the next manual wake). Confirmed via
+# Kernel-Power 506/507 events: Register-only never produced a standby exit at the trigger, Set did.
+Set-ScheduledTask -TaskName $taskName -Trigger $trigger | Out-Null
+
 Write-Host "Registered '$taskName'. Upcoming runs:"
 (Get-ScheduledTask -TaskName $taskName | Get-ScheduledTaskInfo).NextRunTime
 Write-Host ""
