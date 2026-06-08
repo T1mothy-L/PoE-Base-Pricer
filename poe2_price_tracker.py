@@ -2,8 +2,8 @@
 PoE2 white-base price tracker.
 
 Reads items.json, queries the official PoE2 trade API across 4 currencies per item,
-converts all listings to exalt-equivalents via poe2scout rates, computes the median
-of the cheapest 10 listings, and writes:
+converts all listings to exalt-equivalents via poe2scout rates, picks the
+second-cheapest listing as the price (the cheapest in thin markets), and writes:
   - latest.json:  slim current state {rates_to_exalt, items}, for downstream
                   consumers (item filter step)
   - prices.db:    append-only SQLite history with currency rates per run
@@ -21,7 +21,6 @@ import json
 import logging
 import os
 import sqlite3
-import statistics
 import sys
 import time
 from datetime import datetime, timezone
@@ -65,9 +64,13 @@ USER_AGENT = (
 # subsumes every case it covered.
 CURRENCIES = ["exalted", "chaos", "annul", "divine"]
 TOP_N_PER_CURRENCY = 10        # cheapest hashes pulled per currency
-TOP_N_COMBINED = 10            # cheapest after conversion to exalts
+TOP_N_COMBINED = 10            # cheapest after conversion (used by auto-skip)
+# Price selection: take the 2nd-cheapest converted listing to dodge a single
+# lowball/joke listing. Below this many total listings the market is too thin
+# to trust a second, so fall back to the genuine cheapest.
+SECOND_LOWEST_MIN_LISTINGS = 40
 
-# Auto-fan-out: when an ilvl-82 item's median exceeds this many divines, do
+# Auto-fan-out: when an ilvl-82 item's price exceeds this many divines, do
 # a follow-up search at ilvl 80 too. The idea is that a chase base worth a
 # divine at ilvl 82 is probably still tradeable at ilvl 80 (which drops
 # meaningfully more often), so we want filter-rule data for both. Fan-out
@@ -433,18 +436,17 @@ def process_item(client: TradeClient, converter: CurrencyConverter,
                 exalt_values.append(exalt_value)
 
     exalt_values.sort()
-    cheapest = exalt_values[:TOP_N_COMBINED]
-    median = statistics.median(cheapest) if cheapest else None
 
-    # Thin-market outlier guard: fewer than 10 listings and median > 3× cheapest
-    # signals price-joking. Use 1.5× the cheapest listing as a conservative estimate.
-    if (
-        cheapest
-        and median is not None
-        and len(cheapest) < TOP_N_COMBINED
-        and median > 3 * cheapest[0]
-    ):
-        median = 1.5 * cheapest[0]
+    # Price = second-cheapest converted listing, which skips a single lowball/joke
+    # listing. In a thin market (fewer than SECOND_LOWEST_MIN_LISTINGS total
+    # listings) there isn't enough depth to trust a second, so use the genuine
+    # cheapest. Falls back to the cheapest if only one listing was actually priced.
+    if not exalt_values:
+        median = None
+    elif total_listings < SECOND_LOWEST_MIN_LISTINGS:
+        median = exalt_values[0]
+    else:
+        median = exalt_values[1] if len(exalt_values) >= 2 else exalt_values[0]
 
     return {
         "base": base,
@@ -692,10 +694,10 @@ def main() -> int:
 
             # Fan-out: an ilvl-82 result triggers a complementary ilvl-80
             # lookup in two cases:
-            #   (1) median > 1 divine — the base is valuable enough that
+            #   (1) price > 1 divine — the base is valuable enough that
             #       the ilvl-80 drop (which drops more often) is worth
             #       tracking for the filter.
-            #   (2) median is None — the base had no listings at 82, so
+            #   (2) price is None — the base had no listings at 82, so
             #       try 80 to find ANY listings before declaring it
             #       no-data.
             # Skipped in either case if the user already has (base, 80)
@@ -714,7 +716,7 @@ def main() -> int:
                     and result["median_exalts"]
                         > FANOUT_82_TO_80_DIVINE_THRESHOLD * divine_rate
                 ):
-                    fanout_reason = "82 median > 1 divine"
+                    fanout_reason = "82 price > 1 divine"
                 elif result["median_exalts"] is None:
                     fanout_reason = "82 had no listings"
 

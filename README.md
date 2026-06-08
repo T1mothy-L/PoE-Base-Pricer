@@ -1,11 +1,11 @@
 # PoE2 Price Tracker
 
-Polls the official PoE2 trade API for a configurable list of white (normal) item bases at minimum item levels, converts all listings to exalt-equivalents via poe2scout rates, and stores the median of the cheapest 10 listings per item.
+Polls the official PoE2 trade API for a configurable list of white (normal) item bases at minimum item levels, converts all listings to exalt-equivalents via poe2scout rates, and stores the second-cheapest listing as the price per item (the cheapest in thin markets — see below).
 
 Outputs two things every run:
 
 - **`latest.json`** — slim current state `{rates_to_exalt: {exalted, chaos, divine, annul}, items: [{base, min_ilvl, median_exalts}, ...]}`. The per-run poe2scout rates ride along so consumers can re-express exalt prices in any currency without opening `prices.db`. For downstream consumers (e.g. the future item filter step).
-- **`prices.db`** — append-only SQLite history with currency rates stored per run, so historical medians can be re-expressed in any currency later.
+- **`prices.db`** — append-only SQLite history with currency rates stored per run, so historical prices can be re-expressed in any currency later.
 
 Designed to run as a Claude Routine using this repo as persistent storage. Also works locally.
 
@@ -45,9 +45,11 @@ Each item has two fields:
 - `base` (required) — exact base name as it appears in-game / on the trade site
 - `min_ilvl` (required) — minimum item level filter
 
+**Price selection.** The stored price (`median_exalts`) is the **second-cheapest** listing in exalt-equivalents — this skips a single lowball / joke listing without averaging in pricier ones. In a **thin market** (fewer than 40 total listings for the base) there isn't enough depth to trust a second, so the **cheapest** listing is used instead. (The `median_exalts` field keeps its name for backward compatibility with `prices.db` history and downstream consumers, but it's no longer a median.)
+
 **Auto-skip.** Currencies are queried in ascending order of unit value: exalted → chaos → annul → divine. After each query, if the script already has 10+ listings and the 10th cheapest is worth less than one whole unit of the next currency (per the current poe2scout rate), it skips that currency's API call — no listing in it could enter the cheapest-10. Typical white base ilvl 82: only exalted gets queried (chaos/annul/divine all auto-skipped), saving ~20s per item.
 
-**Auto-fan-out (ilvl 82 → 80).** If an ilvl-82 entry's median exceeds one divine, the script also queries the same base at ilvl 80 and adds a separate row to `latest.json` / `prices.db`. The rationale: a chase base worth a divine at ilvl 82 is usually still tradeable at ilvl 80, and ilvl 80 drops meaningfully more often, so the filter benefits from having both prices. Fan-out is skipped if you've already put `{"base": "...", "min_ilvl": 80}` in `items.json` for that base — your explicit config wins.
+**Auto-fan-out (ilvl 82 → 80).** If an ilvl-82 entry's price exceeds one divine, the script also queries the same base at ilvl 80 and adds a separate row to `latest.json` / `prices.db`. The rationale: a chase base worth a divine at ilvl 82 is usually still tradeable at ilvl 80, and ilvl 80 drops meaningfully more often, so the filter benefits from having both prices. Fan-out is skipped if you've already put `{"base": "...", "min_ilvl": 80}` in `items.json` for that base — your explicit config wins.
 
 ## Telegram notifications (optional)
 
@@ -161,18 +163,18 @@ CREATE TABLE item_prices (
   run_id         INTEGER NOT NULL REFERENCES runs(run_id),
   base           TEXT    NOT NULL,
   min_ilvl       INTEGER NOT NULL,
-  median_exalts  REAL,                -- null when no listings
+  median_exalts  REAL,                -- selected price (2nd-cheapest, or cheapest in thin markets); null when no listings
   num_listings   INTEGER NOT NULL     -- sum of search.total across 4 currencies
 );
 
 CREATE INDEX idx_item_prices_lookup ON item_prices(base, min_ilvl, run_id);
 ```
 
-Example analytics query (median over time for one base, expressed in divine):
+Example analytics query (price over time for one base, expressed in divine):
 
 ```sql
 SELECT r.timestamp,
-       ip.median_exalts / r.rate_divine_to_exalt AS median_divine
+       ip.median_exalts / r.rate_divine_to_exalt AS price_divine
 FROM item_prices ip
 JOIN runs r ON r.run_id = ip.run_id
 WHERE ip.base = 'Ancestral Tiara' AND ip.min_ilvl = 82
