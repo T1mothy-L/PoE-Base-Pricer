@@ -30,8 +30,11 @@ if (-not (Test-Path $wrapperPath)) {
 
 # Trigger: daily at $firstRunAt, then repeating every $intervalHours through the day.
 $trigger = New-ScheduledTaskTrigger -Daily -At $firstRunAt
+# NOTE: New-TimeSpan -Hours is typed [int], so a fractional value (1.5) is
+# rounded to a whole hour (2) before the TimeSpan is built. Use
+# [TimeSpan]::FromHours (takes a [double]) to honor fractional-hour intervals.
 $trigger.Repetition = (New-ScheduledTaskTrigger -Once -At $firstRunAt `
-    -RepetitionInterval (New-TimeSpan -Hours $intervalHours) `
+    -RepetitionInterval ([TimeSpan]::FromHours($intervalHours)) `
     -RepetitionDuration (New-TimeSpan -Hours 24)).Repetition
 
 $action = New-ScheduledTaskAction `
@@ -51,7 +54,7 @@ $settings = New-ScheduledTaskSettingsSet `
     -StartWhenAvailable `
     -RestartCount 2 `
     -RestartInterval (New-TimeSpan -Minutes 15) `
-    -ExecutionTimeLimit (New-TimeSpan -Hours $timeoutHours) `
+    -ExecutionTimeLimit ([TimeSpan]::FromHours($timeoutHours)) `
     -MultipleInstances IgnoreNew
 
 # S4U ("Service For User") runs the task whether or not you're logged on WITHOUT
