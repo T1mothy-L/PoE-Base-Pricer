@@ -76,8 +76,8 @@ SECOND_LOWEST_MIN_LISTINGS = 40
 # meaningfully more often), so we want filter-rule data for both. Fan-out
 # is skipped if the user already has (base, 80) in items.json — their
 # explicit config wins.
-FANOUT_82_TO_80_DIVINE_THRESHOLD = 1.0
-FANOUT_LOWER_ILVL = 80
+FANOUT_82_TO_80_DIVINE_THRESHOLD = 0.3
+FANOUT_LOWER_ILVL = 81
 
 # Per-request pacing (search + fetch share GGG's `Ip` budget). GGG sends
 # scripts a tighter 300s bucket (30) than browsers (60), so we look at
