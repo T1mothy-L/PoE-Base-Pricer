@@ -1,35 +1,35 @@
 {
   "rates_to_exalt": {
     "exalted": 1.0,
-    "chaos": 52.11248600732157,
-    "divine": 479.73898307633675,
-    "annul": 291.31675929871324
+    "chaos": 52.52260152416745,
+    "divine": 482.16223611220687,
+    "annul": 298.4313722725096
   },
   "items": [
     {
       "base": "Ultimate Life Flask",
       "min_ilvl": 83,
-      "median_exalts": 479.73898307633675
+      "median_exalts": 472.70341371750703
     },
     {
       "base": "Ultimate Mana Flask",
       "min_ilvl": 83,
-      "median_exalts": 260.56243003660785
+      "median_exalts": 210.0904060966698
     },
     {
       "base": "Slipstrike Vest",
       "min_ilvl": 82,
-      "median_exalts": 20.0
+      "median_exalts": 11.0
     },
     {
       "base": "Corsair Coat",
       "min_ilvl": 82,
-      "median_exalts": 5.0
+      "median_exalts": 4.0
     },
     {
       "base": "Sleek Jacket",
       "min_ilvl": 82,
-      "median_exalts": 40.0
+      "median_exalts": 39.0
     },
     {
       "base": "Falconer's Jacket",
@@ -89,7 +89,7 @@
     {
       "base": "Drakeskin Boots",
       "min_ilvl": 82,
-      "median_exalts": 4.0
+      "median_exalts": 2.0
     },
     {
       "base": "Dragonscale Boots",
@@ -99,27 +99,27 @@
     {
       "base": "Quickslip Shoes",
       "min_ilvl": 82,
-      "median_exalts": 5.0
+      "median_exalts": 8.0
     },
     {
       "base": "Daggerfoot Shoes",
       "min_ilvl": 82,
-      "median_exalts": 20.0
+      "median_exalts": 13.0
     },
     {
       "base": "Luxurious Slippers",
       "min_ilvl": 82,
-      "median_exalts": 8.0
+      "median_exalts": 6.0
     },
     {
       "base": "Sandsworn Sandals",
       "min_ilvl": 82,
-      "median_exalts": 10.0
+      "median_exalts": 8.0
     },
     {
       "base": "Sekhema Sandals",
       "min_ilvl": 82,
-      "median_exalts": 50.0
+      "median_exalts": 100.0
     },
     {
       "base": "Vaal Greaves",
@@ -169,7 +169,7 @@
     {
       "base": "Sirenscale Gloves",
       "min_ilvl": 82,
-      "median_exalts": 33.0
+      "median_exalts": 34.0
     },
     {
       "base": "Vaal Mitts",
@@ -184,7 +184,7 @@
     {
       "base": "Blacksteel Gauntlets",
       "min_ilvl": 82,
-      "median_exalts": 19.0
+      "median_exalts": 8.0
     },
     {
       "base": "Adherent Cuffs",
@@ -204,12 +204,12 @@
     {
       "base": "Kamasan Tiara",
       "min_ilvl": 82,
-      "median_exalts": 7.0
+      "median_exalts": 10.0
     },
     {
       "base": "Ancestral Tiara",
       "min_ilvl": 82,
-      "median_exalts": 95.0
+      "median_exalts": 100.0
     },
     {
       "base": "Paragon Greathelm",
@@ -234,7 +234,7 @@
     {
       "base": "Stellar Amulet",
       "min_ilvl": 82,
-      "median_exalts": 10.0
+      "median_exalts": 9.0
     },
     {
       "base": "Solar Amulet",
@@ -244,12 +244,12 @@
     {
       "base": "Gold Amulet",
       "min_ilvl": 82,
-      "median_exalts": 150.0
+      "median_exalts": 169.0
     },
     {
       "base": "Gold Amulet",
       "min_ilvl": 81,
-      "median_exalts": 20.0
+      "median_exalts": 10.0
     },
     {
       "base": "Amber Amulet",
@@ -279,7 +279,7 @@
     {
       "base": "Bloodstone Amulet",
       "min_ilvl": 82,
-      "median_exalts": 4.0
+      "median_exalts": 3.0
     },
     {
       "base": "Heavy Belt",
@@ -289,7 +289,7 @@
     {
       "base": "Utility Belt",
       "min_ilvl": 82,
-      "median_exalts": 65.0
+      "median_exalts": 80.0
     },
     {
       "base": "Prismatic Ring",
@@ -299,12 +299,12 @@
     {
       "base": "Thawing Charm",
       "min_ilvl": 82,
-      "median_exalts": 28.0
+      "median_exalts": 27.0
     },
     {
       "base": "Stone Charm",
       "min_ilvl": 82,
-      "median_exalts": 5.0
+      "median_exalts": 10.0
     },
     {
       "base": "Silver Charm",
@@ -314,12 +314,12 @@
     {
       "base": "Staunching Charm",
       "min_ilvl": 82,
-      "median_exalts": 8.0
+      "median_exalts": 10.0
     },
     {
       "base": "Dousing Charm",
       "min_ilvl": 82,
-      "median_exalts": 52.11248600732157
+      "median_exalts": 105.0452030483349
     },
     {
       "base": "Grounding Charm",
@@ -334,17 +334,17 @@
     {
       "base": "Gold Ring",
       "min_ilvl": 82,
-      "median_exalts": 200.0
+      "median_exalts": 300.0
     },
     {
       "base": "Gold Ring",
       "min_ilvl": 81,
-      "median_exalts": 25.0
+      "median_exalts": 15.0
     },
     {
       "base": "Tasalian Focus",
       "min_ilvl": 82,
-      "median_exalts": 10.0
+      "median_exalts": 6.0
     },
     {
       "base": "Serrated Quiver",
@@ -359,7 +359,7 @@
     {
       "base": "Visceral Quiver",
       "min_ilvl": 82,
-      "median_exalts": 3.0
+      "median_exalts": 2.0
     },
     {
       "base": "Desert Buckler",
@@ -394,7 +394,7 @@
     {
       "base": "Akoyan Spear",
       "min_ilvl": 82,
-      "median_exalts": 6.0
+      "median_exalts": 4.0
     },
     {
       "base": "Flying Spear",
@@ -404,12 +404,12 @@
     {
       "base": "Grand Spear",
       "min_ilvl": 82,
-      "median_exalts": 4.0
+      "median_exalts": 1.0
     },
     {
       "base": "Warmonger Bow",
       "min_ilvl": 82,
-      "median_exalts": 7.0
+      "median_exalts": 19.0
     },
     {
       "base": "Gemini Bow",
@@ -419,7 +419,7 @@
     {
       "base": "Obliterator Bow",
       "min_ilvl": 82,
-      "median_exalts": 86.0
+      "median_exalts": 76.0
     },
     {
       "base": "Desolate Crossbow",
@@ -434,7 +434,7 @@
     {
       "base": "Siege Crossbow",
       "min_ilvl": 82,
-      "median_exalts": 5.0
+      "median_exalts": 3.0
     },
     {
       "base": "Alpha Talisman",
@@ -459,7 +459,7 @@
     {
       "base": "Spiny Talisman",
       "min_ilvl": 82,
-      "median_exalts": 15.0
+      "median_exalts": 14.0
     },
     {
       "base": "Massive Greathammer",
@@ -484,27 +484,27 @@
     {
       "base": "Sinister Quarterstaff",
       "min_ilvl": 82,
-      "median_exalts": 50.0
+      "median_exalts": 68.0
     },
     {
       "base": "Amethyst Ring",
       "min_ilvl": 82,
-      "median_exalts": 8.0
+      "median_exalts": 4.0
     },
     {
       "base": "Ruby Ring",
       "min_ilvl": 82,
-      "median_exalts": 4.0
+      "median_exalts": 5.0
     },
     {
       "base": "Topaz Ring",
       "min_ilvl": 82,
-      "median_exalts": 3.0
+      "median_exalts": 4.0
     },
     {
       "base": "Sapphire Ring",
       "min_ilvl": 82,
-      "median_exalts": 9.0
+      "median_exalts": 8.0
     },
     {
       "base": "Cavalry Boots",
@@ -514,7 +514,7 @@
     {
       "base": "Flanged Mace",
       "min_ilvl": 82,
-      "median_exalts": 31.0
+      "median_exalts": 30.0
     },
     {
       "base": "Sacramental Robe",
@@ -544,12 +544,12 @@
     {
       "base": "Aegis Quarterstaff",
       "min_ilvl": 82,
-      "median_exalts": 4.0
+      "median_exalts": 5.0
     },
     {
       "base": "Bladed Quarterstaff",
       "min_ilvl": 82,
-      "median_exalts": 8.0
+      "median_exalts": 6.0
     },
     {
       "base": "Bolting Quarterstaff",
@@ -579,7 +579,7 @@
     {
       "base": "Striking Quarterstaff",
       "min_ilvl": 82,
-      "median_exalts": 11.0
+      "median_exalts": 10.0
     },
     {
       "base": "Swiftstalker Coat",
@@ -599,7 +599,7 @@
     {
       "base": "Wanderer Shoes",
       "min_ilvl": 82,
-      "median_exalts": 3.0
+      "median_exalts": 4.0
     },
     {
       "base": "Wyrmscale Coat",
@@ -619,7 +619,7 @@
     {
       "base": "Rattling Sceptre",
       "min_ilvl": 82,
-      "median_exalts": 3.0
+      "median_exalts": 4.0
     },
     {
       "base": "Omen Sceptre",
@@ -629,12 +629,12 @@
     {
       "base": "Shrine Sceptre",
       "min_ilvl": 82,
-      "median_exalts": 74.0
+      "median_exalts": 118.0
     },
     {
       "base": "Stoic Sceptre",
       "min_ilvl": 82,
-      "median_exalts": 10.0
+      "median_exalts": 5.0
     },
     {
       "base": "Wrath Sceptre",
@@ -654,7 +654,7 @@
     {
       "base": "Dueling Wand",
       "min_ilvl": 81,
-      "median_exalts": 3.0
+      "median_exalts": 5.0
     },
     {
       "base": "Withered Wand",
@@ -669,12 +669,12 @@
     {
       "base": "Chiming Staff",
       "min_ilvl": 81,
-      "median_exalts": 2.0
+      "median_exalts": 3.0
     },
     {
       "base": "Gelid Staff",
       "min_ilvl": 81,
-      "median_exalts": 3.0
+      "median_exalts": 19.0
     },
     {
       "base": "Paralysing Staff",
@@ -709,7 +709,7 @@
     {
       "base": "Heavy Belt",
       "min_ilvl": 0,
-      "median_exalts": 29.0
+      "median_exalts": 25.0
     }
   ]
 }
